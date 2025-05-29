@@ -33,9 +33,17 @@
               pkg-config
               rust-toolchain
               act
+
+              llvmPackages.llvm.dev
             ];
 
-            buildInputs = with pkgs; [ ];
+            buildInputs = with pkgs; [
+              libffi
+              libxml2
+              libz
+              ncurses
+              stdenv.cc.cc
+            ];
 
             RUST_SRC_PATH = pkgs.rustPlatform.rustLibSrc;
             LD_LIBRARY_PATH = makeLibraryPath buildInputs;

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, mem};
 
 use cranelift::prelude::*;
+use cranelift_control::ControlPlane;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
@@ -20,7 +21,14 @@ pub struct Generator {
 
 impl Generator {
 	pub fn new() -> Self {
-		let builder = JITBuilder::new(default_libcall_names()).unwrap();
+		let mut flag_builder = settings::builder();
+		flag_builder.set("opt_level", "speed_and_size").unwrap();
+		let isa = cranelift_native::builder()
+			.unwrap()
+			.finish(settings::Flags::new(flag_builder))
+			.unwrap();
+		let builder = JITBuilder::with_isa(isa, default_libcall_names());
+
 		Self {
 			builder_context: FunctionBuilderContext::new(),
 			functions: HashMap::new(),
@@ -56,7 +64,7 @@ impl Generator {
 		}
 	}
 
-	pub fn function(&mut self, function: &Function) -> Result<fn() -> i64> {
+	pub fn function(&mut self, function: &Function) -> Result<fn() -> u64> {
 		let mut context = self.module.make_context();
 
 		let signature = &mut context.func.signature;
@@ -104,17 +112,25 @@ impl Generator {
 		generator.builder.ins().return_(&[return_value]);
 		generator.builder.finalize();
 
+		context
+			.optimize(self.module.isa(), &mut ControlPlane::default())
+			.unwrap();
+
 		print!("{}", context.func.display());
 
 		self.module.define_function(func_id, &mut context).unwrap();
 		self.module.clear_context(&mut context);
 		self.module.finalize_definitions().unwrap();
 
+		if function.proto.name.0.starts_with("__anon") {
+			self.functions.remove(&function.proto.name);
+		}
+
 		let fn_ = self.module.get_finalized_function(func_id);
 
 		#[allow(unsafe_code)]
 		// TODO: this is unsafe as some functions ask for arguments
-		let fn_ = unsafe { mem::transmute::<*const u8, fn() -> i64>(fn_) };
+		let fn_ = unsafe { mem::transmute::<*const u8, fn() -> u64>(fn_) };
 
 		Ok(fn_)
 	}

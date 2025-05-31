@@ -295,8 +295,10 @@ name = "kaleidoscope"
 version = "0.0.0"
 dependencies = [
  "cranelift",
+ "cranelift-control",
  "cranelift-jit",
  "cranelift-module",
+ "cranelift-native",
  "inkwell",
  "target-lexicon",
 ]

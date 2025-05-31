@@ -6,8 +6,10 @@ edition = "2024"
 [dependencies]
 # Cranelift backend
 cranelift = { version = "0.120", optional = true }
-cranelift-module = { version = "0.120", optional = true }
+cranelift-control = { version = "0.120", optional = true }
 cranelift-jit = { version = "0.120", optional = true }
+cranelift-module = { version = "0.120", optional = true }
+cranelift-native = { version = "0.120", optional = true }
 target-lexicon = { version = "0.13", optional = true }
 
 # LLVM Backend (broken)
@@ -19,8 +21,10 @@ default = ["cranelift"]
 llvm = ["dep:inkwell"]
 cranelift = [
   "dep:cranelift",
-  "dep:cranelift-module",
+  "dep:cranelift-control",
   "dep:cranelift-jit",
+  "dep:cranelift-module",
+  "dep:cranelift-native",
   "dep:target-lexicon",
 ]
 

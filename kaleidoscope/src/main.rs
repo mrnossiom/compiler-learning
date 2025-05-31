@@ -30,6 +30,8 @@ fn main() {
 
 	let mut generator = Generator::new();
 
+	let mut anon_index = 0;
+
 	loop {
 		print!("repl> ");
 		stdout().flush().unwrap();
@@ -50,11 +52,13 @@ fn main() {
 			ReplItem::Expr(expr) => {
 				let fn_ = Function {
 					proto: Prototype {
-						name: Ident("anon".into()),
+						name: Ident(format!("__anon_{anon_index}")),
 						args: Vec::new(),
 					},
 					body: expr,
 				};
+				anon_index += 1;
+
 				let fn_val = generator.function(&fn_).unwrap();
 				println!("{}", fn_val());
 			}

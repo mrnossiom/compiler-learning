@@ -5,9 +5,12 @@ use std::{
 	io::{Write, stdin, stdout},
 };
 
-use parser::Prototype;
+use cranelift_module::Linkage;
 
-use crate::parser::{Function, ReplItem};
+use crate::{
+	codegen::Generator,
+	parser::{Function, Prototype, ReplItem},
+};
 
 mod codegen;
 mod lexer;
@@ -25,8 +28,7 @@ fn main() {
 
 	let mut line = String::new();
 
-	// let ctx = Context::create();
-	// let mut codegen = codegen::CodeGen::new(&ctx);
+	let mut generator = Generator::new();
 
 	loop {
 		print!("repl> ");
@@ -53,19 +55,14 @@ fn main() {
 					},
 					body: expr,
 				};
-				// let fn_val = codegen.compile_fn(&fn_).unwrap();
-				// fn_val.print_to_stderr();
-				// unsafe { fn_val.delete() }
+				let fn_val = generator.function(&fn_).unwrap();
+				println!("{}", fn_val());
 			}
 			ReplItem::Definition(function) => {
-				// let fn_val = codegen.compile_fn(&function).unwrap();
-				// codegen.apply_passes();
-				// fn_val.print_to_stderr();
+				generator.function(&function).unwrap();
 			}
 			ReplItem::Extern(proto) => {
-				// let fn_val = codegen.compile_prototype(&proto).unwrap();
-				// codegen.apply_passes();
-				// fn_val.print_to_stderr();
+				generator.prototype(&proto, Linkage::Import).unwrap();
 			}
 		}
 	}

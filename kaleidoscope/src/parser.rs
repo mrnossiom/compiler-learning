@@ -20,7 +20,7 @@ impl<I: Iterator<Item = Token>> Parser<'_, I> {
 	/// *num-literal-expr* ::= *number*
 	fn parse_num_literal_expr(&mut self) -> Result<Expr, &'static str> {
 		match self.tokens.next() {
-			Some(Token::Number(value)) => Ok(Expr::NumLiteral(NumberExpr { value })),
+			Some(Token::Number(value)) => Ok(Expr::Literal(NumberExpr { value })),
 			_ => todo!(),
 		}
 	}
@@ -163,7 +163,7 @@ pub struct NumberExpr {
 
 #[derive(Debug)]
 pub enum Expr {
-	NumLiteral(NumberExpr),
+	Literal(NumberExpr),
 	Bin {
 		op: char,
 		left: Box<Expr>,

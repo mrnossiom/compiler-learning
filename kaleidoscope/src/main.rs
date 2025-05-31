@@ -5,7 +5,6 @@ use std::{
 	io::{Write, stdin, stdout},
 };
 
-use inkwell::context::Context;
 use parser::Prototype;
 
 use crate::parser::{Function, ReplItem};
@@ -26,8 +25,8 @@ fn main() {
 
 	let mut line = String::new();
 
-	let ctx = Context::create();
-	let mut codegen = codegen::CodeGen::new(&ctx);
+	// let ctx = Context::create();
+	// let mut codegen = codegen::CodeGen::new(&ctx);
 
 	loop {
 		print!("repl> ");
@@ -54,19 +53,19 @@ fn main() {
 					},
 					body: expr,
 				};
-				let fn_val = codegen.compile_fn(&fn_).unwrap();
-				fn_val.print_to_stderr();
-				unsafe { fn_val.delete() }
+				// let fn_val = codegen.compile_fn(&fn_).unwrap();
+				// fn_val.print_to_stderr();
+				// unsafe { fn_val.delete() }
 			}
 			ReplItem::Definition(function) => {
-				let fn_val = codegen.compile_fn(&function).unwrap();
-				codegen.apply_passes();
-				fn_val.print_to_stderr();
+				// let fn_val = codegen.compile_fn(&function).unwrap();
+				// codegen.apply_passes();
+				// fn_val.print_to_stderr();
 			}
 			ReplItem::Extern(proto) => {
-				let fn_val = codegen.compile_prototype(&proto).unwrap();
-				codegen.apply_passes();
-				fn_val.print_to_stderr();
+				// let fn_val = codegen.compile_prototype(&proto).unwrap();
+				// codegen.apply_passes();
+				// fn_val.print_to_stderr();
 			}
 		}
 	}

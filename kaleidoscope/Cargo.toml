@@ -1,0 +1,43 @@
+[package]
+name = "kaleidoscope"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+# Cranelift backend
+cranelift = { version = "0.120", optional = true }
+cranelift-module = { version = "0.120", optional = true }
+cranelift-simplejit = { version = "0.68", optional = true }
+target-lexicon = { version = "0.13", optional = true }
+
+# LLVM Backend (broken)
+inkwell = { version = "0.6", features = ["llvm18-1"], optional = true }
+
+[features]
+default = ["cranelift"]
+
+llvm = ["dep:inkwell"]
+cranelift = [
+  "dep:cranelift",
+  "dep:cranelift-module",
+  "dep:cranelift-simplejit",
+  "dep:target-lexicon",
+]
+
+[lints.rust]
+# not forbid because jit-ing is inherently unsafe
+unsafe_code = "deny"
+[lints.rustdoc]
+all = "warn"
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# cargo = { level = "warn", priority = -1 }
+
+dbg_macro = "warn"
+# expect_used = "warn"
+# missing_docs_in_private_items = "warn"
+# todo = "warn"
+# unwrap_used = "warn"
+
+wildcard_imports = "allow"

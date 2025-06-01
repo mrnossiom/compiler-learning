@@ -6,11 +6,12 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
 use crate::{
-	Ident,
+	Ident, Result,
+	lexer::Operator,
 	parser::{Expr, Function, Prototype},
 };
 
-type Result<T> = std::result::Result<T, &'static str>;
+use super::CodeGen;
 
 pub struct Generator {
 	builder_context: FunctionBuilderContext,
@@ -63,8 +64,17 @@ impl Generator {
 			Some(_) => Err("already defined"),
 		}
 	}
+}
 
-	pub fn function(&mut self, function: &Function) -> Result<fn() -> u64> {
+impl CodeGen for Generator {
+	type Fn = fn() -> i64;
+
+	fn extern_(&mut self, prototype: &Prototype) -> Result<()> {
+		self.prototype(prototype, Linkage::Import)?;
+		Ok(())
+	}
+
+	fn function(&mut self, function: &Function) -> Result<Self::Fn> {
 		let mut context = self.module.make_context();
 
 		let signature = &mut context.func.signature;
@@ -103,7 +113,6 @@ impl Generator {
 		let return_value = match generator.expr(&function.body) {
 			Ok(ret) => ret,
 			Err(err) => {
-				generator.builder.finalize();
 				self.functions.remove(&function.proto.name);
 				return Err(err);
 			}
@@ -130,9 +139,13 @@ impl Generator {
 
 		#[allow(unsafe_code)]
 		// TODO: this is unsafe as some functions ask for arguments
-		let fn_ = unsafe { mem::transmute::<*const u8, fn() -> u64>(fn_) };
+		let fn_ = unsafe { mem::transmute::<*const u8, fn() -> i64>(fn_) };
 
 		Ok(fn_)
+	}
+
+	fn call_fn(&mut self, func: Self::Fn) -> Result<i64> {
+		Ok(func())
 	}
 }
 
@@ -167,21 +180,23 @@ pub struct FunctionGenerator<'a> {
 impl FunctionGenerator<'_> {
 	fn expr(&mut self, expr: &Expr) -> Result<Value> {
 		let value = match expr {
-			Expr::Literal(num) => self.builder.ins().iconst(types::I64, num.value as i64),
-			Expr::Ident(ident) => match self.values.get(&ident) {
+			Expr::Literal(num) => self.builder.ins().iconst(types::I64, num.value),
+			Expr::Ident(ident) => match self.values.get(ident) {
 				Some(var) => self.builder.use_var(*var),
 				None => return Err("var undefined"),
 			},
-			Expr::Bin { op, left, right } => {
+			Expr::Binary { op, left, right } => {
 				let lhs = self.expr(left)?;
 				let rhs = self.expr(right)?;
 
 				match op {
-					'+' => self.builder.ins().iadd(lhs, rhs),
-					'-' => self.builder.ins().isub(lhs, rhs),
-					'*' => self.builder.ins().imul(lhs, rhs),
-					'/' => self.builder.ins().udiv(lhs, rhs),
-					_ => return Err("undefined binop"),
+					Operator::Plus => self.builder.ins().iadd(lhs, rhs),
+					Operator::Minus => self.builder.ins().isub(lhs, rhs),
+					Operator::Mul => self.builder.ins().imul(lhs, rhs),
+					Operator::Div => self.builder.ins().udiv(lhs, rhs),
+
+					Operator::Gt => self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs),
+					Operator::Lt => self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs),
 				}
 			}
 			Expr::FnCall { ident, args } => match self.functions.get(ident) {
@@ -203,6 +218,41 @@ impl FunctionGenerator<'_> {
 				}
 				None => return Err("invalid fn call"),
 			},
+			Expr::If {
+				condition,
+				consequence,
+				alternative,
+			} => {
+				let condition = self.expr(condition)?;
+
+				let then_block = self.builder.create_block();
+				let else_block = self.builder.create_block();
+				let cont_block = self.builder.create_block();
+
+				// cranelift block params are used like phi values
+				self.builder.append_block_param(cont_block, types::I64);
+
+				self.builder
+					.ins()
+					.brif(condition, then_block, &[], else_block, &[]);
+
+				self.builder.switch_to_block(then_block);
+				self.builder.seal_block(then_block);
+				let then_ret = self.expr(consequence)?;
+
+				self.builder.ins().jump(cont_block, &[then_ret.into()]);
+
+				self.builder.switch_to_block(else_block);
+				self.builder.seal_block(else_block);
+				let else_ret = self.expr(alternative)?;
+
+				self.builder.ins().jump(cont_block, &[else_ret.into()]);
+
+				self.builder.switch_to_block(cont_block);
+				self.builder.seal_block(cont_block);
+
+				self.builder.block_params(cont_block)[0]
+			}
 		};
 
 		Ok(value)

@@ -16,7 +16,8 @@ target-lexicon = { version = "0.13", optional = true }
 inkwell = { version = "0.6", features = ["llvm18-1"], optional = true }
 
 [features]
-default = ["cranelift"]
+default = ["llvm"]
+# default = ["cranelift"]
 
 llvm = ["dep:inkwell"]
 cranelift = [
@@ -41,7 +42,7 @@ nursery = { level = "warn", priority = -1 }
 dbg_macro = "warn"
 # expect_used = "warn"
 # missing_docs_in_private_items = "warn"
-# todo = "warn"
+todo = "warn"
 # unwrap_used = "warn"
 
 wildcard_imports = "allow"

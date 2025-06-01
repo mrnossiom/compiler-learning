@@ -6,15 +6,40 @@ use crate::Ident;
 pub enum Token {
 	Ident(Ident),
 
-	Number(u64),
+	Number(i64),
 
-	Operator(char),
+	Operator(Operator),
 
 	Delimiter(char),
 
 	// Keywords
 	Def,
 	Extern,
+
+	If,
+	Then,
+	Else,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operator {
+	Plus,
+	Minus,
+	Mul,
+	Div,
+
+	Gt,
+	Lt,
+}
+
+impl Operator {
+	pub const fn precedence(self) -> u32 {
+		match self {
+			Self::Minus | Self::Plus => 20,
+			Self::Mul | Self::Div => 40,
+			Self::Gt | Self::Lt => 10,
+		}
+	}
 }
 
 pub struct Lexer<'a> {
@@ -49,6 +74,10 @@ impl<'a> Lexer<'a> {
 					match ident.as_str() {
 						"def" => Token::Def,
 						"extern" => Token::Extern,
+
+						"if" => Token::If,
+						"then" => Token::Then,
+						"else" => Token::Else,
 						_ => Token::Ident(Ident(ident)),
 					}
 				}
@@ -63,8 +92,15 @@ impl<'a> Lexer<'a> {
 					continue;
 				}
 
-				// else make count as a custom op
-				c => Token::Operator(c),
+				'+' => Token::Operator(Operator::Plus),
+				'-' => Token::Operator(Operator::Minus),
+				'*' => Token::Operator(Operator::Mul),
+				'/' => Token::Operator(Operator::Div),
+
+				'>' => Token::Operator(Operator::Gt),
+				'<' => Token::Operator(Operator::Lt),
+
+				_ => todo!(),
 			};
 
 			return Some(token);

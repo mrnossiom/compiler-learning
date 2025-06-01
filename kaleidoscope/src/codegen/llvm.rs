@@ -1,9 +1,10 @@
 use std::{collections::HashMap, iter};
 
 use inkwell::{
-	AddressSpace, OptimizationLevel,
+	AddressSpace, IntPredicate, OptimizationLevel,
 	builder::Builder,
 	context::Context,
+	execution_engine::ExecutionEngine,
 	module::Module,
 	passes::PassBuilderOptions,
 	targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
@@ -11,48 +12,70 @@ use inkwell::{
 };
 
 use crate::{
-	Ident,
+	Ident, Result,
+	lexer::Operator,
 	parser::{Expr, Function, Prototype},
 };
 
-pub struct CodeGen<'ctx> {
+use super::CodeGen;
+
+pub struct Generator<'ctx> {
 	ctx: &'ctx Context,
 	builder: Builder<'ctx>,
 	module: Module<'ctx>,
+	jit: ExecutionEngine<'ctx>,
 
 	variables: HashMap<Ident, PointerValue<'ctx>>,
 }
 
-impl<'ctx> CodeGen<'ctx> {
+impl<'ctx> Generator<'ctx> {
 	pub fn new(ctx: &'ctx Context) -> Self {
+		let module = ctx.create_module("repl");
+		let jit = module
+			.create_jit_execution_engine(OptimizationLevel::None)
+			.unwrap();
 		Self {
 			ctx,
 			builder: ctx.create_builder(),
-			module: ctx.create_module("repl"),
+			module,
+			jit,
 
 			variables: HashMap::new(),
 		}
 	}
 }
 
-impl<'ctx> CodeGen<'ctx> {
+impl<'ctx> Generator<'ctx> {
 	fn compile_bin_expr<'a>(
 		&'a self,
-		op: char,
+		op: Operator,
 		left: IntValue<'ctx>,
 		right: IntValue<'ctx>,
-	) -> Result<IntValue<'ctx>, &'static str> {
-		match op {
-			'+' => Ok(self.builder.build_int_add(left, right, "tmpadd").unwrap()),
-			'-' => Ok(self.builder.build_int_sub(left, right, "tmpsub").unwrap()),
-			'*' => Ok(self.builder.build_int_mul(left, right, "tmpmul").unwrap()),
-			_ => Err("non valid op"),
-		}
+	) -> Result<IntValue<'ctx>> {
+		let ins = match op {
+			Operator::Plus => self.builder.build_int_add(left, right, "").unwrap(),
+			Operator::Minus => self.builder.build_int_sub(left, right, "").unwrap(),
+			Operator::Mul => self.builder.build_int_mul(left, right, "").unwrap(),
+			Operator::Div => self
+				.builder
+				.build_int_unsigned_div(left, right, "")
+				.unwrap(),
+
+			Operator::Gt => self
+				.builder
+				.build_int_compare(IntPredicate::SGT, left, right, "")
+				.unwrap(),
+			Operator::Lt => self
+				.builder
+				.build_int_compare(IntPredicate::SLT, left, right, "")
+				.unwrap(),
+		};
+		Ok(ins)
 	}
 
-	fn compile_expr(&mut self, expr: &Expr) -> Result<IntValue<'ctx>, &'static str> {
+	fn expr(&mut self, expr: &Expr) -> Result<IntValue<'ctx>> {
 		let value = match expr {
-			Expr::NumLiteral(num) => self.ctx.i64_type().const_int(num.value, true),
+			Expr::Literal(num) => self.ctx.i64_type().const_int(num.value as u64, true),
 			Expr::Ident(ident) => {
 				let var = self.variables.get(ident).unwrap();
 
@@ -61,36 +84,84 @@ impl<'ctx> CodeGen<'ctx> {
 					.unwrap()
 					.into_int_value()
 			}
-			Expr::Bin { op, left, right } => {
-				let left = self.compile_expr(left)?;
-				let right = self.compile_expr(right)?;
+			Expr::Binary { op, left, right } => {
+				let left = self.expr(left)?;
+				let right = self.expr(right)?;
 
 				self.compile_bin_expr(*op, left, right)?
 			}
 			Expr::FnCall { ident, args } => {
 				let func = self.module.get_function(&ident.0).unwrap();
 				if args.len() != func.count_params() as usize {
-					todo!()
+					return Err("fn call args count mismatch");
 				}
 
 				let args = args
 					.iter()
-					.map(|arg| self.compile_expr(arg).map(Into::into))
-					.collect::<Result<Vec<_>, &'static str>>()?;
+					.map(|arg| self.expr(arg).map(Into::into))
+					.collect::<Result<Vec<_>>>()?;
 
 				let call = self.builder.build_call(func, &args, "call").unwrap();
 				let value = call.try_as_basic_value().left().unwrap();
 				value.into_int_value()
+			}
+			Expr::If {
+				condition,
+				consequence,
+				alternative,
+			} => {
+				let condition = self.expr(condition)?;
+				let condition = self
+					.builder
+					.build_int_compare(
+						IntPredicate::NE,
+						condition,
+						self.ctx.bool_type().const_int(0, false),
+						"",
+					)
+					.unwrap();
+
+				let func = self
+					.builder
+					.get_insert_block()
+					.unwrap()
+					.get_parent()
+					.unwrap();
+
+				let then_bb = self.ctx.append_basic_block(func, "then");
+				let else_bb = self.ctx.append_basic_block(func, "else");
+				let merge_bb = self.ctx.append_basic_block(func, "merge");
+
+				self.builder
+					.build_conditional_branch(condition, then_bb, else_bb)
+					.unwrap();
+
+				self.builder.position_at_end(then_bb);
+				let then_val = self.expr(consequence)?;
+				self.builder.build_unconditional_branch(merge_bb).unwrap();
+				let then_bb = self.builder.get_insert_block().unwrap();
+
+				self.builder.position_at_end(else_bb);
+				let else_val = self.expr(alternative)?;
+				self.builder.build_unconditional_branch(merge_bb).unwrap();
+				let else_bb = self.builder.get_insert_block().unwrap();
+
+				self.builder.position_at_end(merge_bb);
+
+				let phi = self
+					.builder
+					.build_phi(self.ctx.i64_type(), "if_ret")
+					.unwrap();
+				phi.add_incoming(&[(&then_val, then_bb), (&else_val, else_bb)]);
+
+				phi.as_basic_value().into_int_value()
 			}
 		};
 
 		Ok(value)
 	}
 
-	pub fn compile_prototype(
-		&mut self,
-		prototype: &Prototype,
-	) -> Result<FunctionValue<'ctx>, &'static str> {
+	pub fn prototype(&mut self, prototype: &Prototype) -> Result<FunctionValue<'ctx>> {
 		let args_ty = iter::repeat_n(self.ctx.i64_type(), prototype.args.len())
 			.map(Into::into)
 			.collect::<Vec<_>>();
@@ -106,13 +177,22 @@ impl<'ctx> CodeGen<'ctx> {
 
 		Ok(fn_val)
 	}
+}
 
-	pub fn compile_fn(&mut self, func: &Function) -> Result<FunctionValue<'ctx>, &'static str> {
+impl<'ctx> CodeGen for Generator<'ctx> {
+	type Fn = FunctionValue<'ctx>;
+
+	fn extern_(&mut self, proto: &Prototype) -> Result<()> {
+		self.prototype(proto)?;
+		Ok(())
+	}
+
+	fn function(&mut self, func: &Function) -> Result<Self::Fn> {
 		if self.module.get_function(&func.proto.name.0).is_some() {
 			return Err("cannot redefine extern function");
 		}
 
-		let fn_val = self.compile_prototype(&func.proto)?;
+		let fn_val = self.prototype(&func.proto)?;
 
 		let bb = self.ctx.append_basic_block(fn_val, "entry");
 		self.builder.position_at_end(bb);
@@ -129,19 +209,35 @@ impl<'ctx> CodeGen<'ctx> {
 				);
 			});
 
-		let ret_val = self.compile_expr(&func.body)?;
+		let ret_val = self.expr(&func.body)?;
 		self.builder.build_return(Some(&ret_val)).unwrap();
 
 		if !fn_val.verify(true) {
-			unsafe { fn_val.delete() }
+			#[allow(unsafe_code)]
+			unsafe {
+				fn_val.delete();
+			}
 			return Err("function is invalid");
 		}
 
+		fn_val.print_to_stderr();
+
 		Ok(fn_val)
+	}
+
+	fn call_fn(&mut self, func: Self::Fn) -> Result<i64> {
+		#[allow(unsafe_code)]
+		let ret = unsafe {
+			self.jit
+				.get_function::<unsafe extern "C" fn() -> i64>(func.get_name().to_str().unwrap())
+		}
+		.unwrap();
+		#[allow(unsafe_code)]
+		Ok(unsafe { ret.call() })
 	}
 }
 
-impl CodeGen<'_> {
+impl Generator<'_> {
 	pub fn apply_passes(&self) {
 		Target::initialize_all(&InitializationConfig::default());
 

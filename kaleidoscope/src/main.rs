@@ -1,34 +1,33 @@
 //! Kaleidoscope
 
-use std::{
-	collections::HashMap,
-	io::{Write, stdin, stdout},
-};
+use std::io::{Write, stdin, stdout};
 
-use cranelift_module::Linkage;
+#[cfg(feature = "llvm")]
+use inkwell::context::Context;
 
 use crate::{
-	codegen::Generator,
-	parser::{Function, Prototype, ReplItem},
+	codegen::{CodeGen, Generator},
+	parser::{Function, ReplItem},
 };
 
 mod codegen;
 mod lexer;
 mod parser;
 
+#[cfg(not(any(feature = "llvm", feature = "cranelift")))]
+compile_error!("You need to choose a backend!");
+
+type Result<T> = std::result::Result<T, &'static str>;
+
 fn main() {
-	// let path = args_os().nth(1).unwrap();
-	// let content = std::fs::read_to_string(path).unwrap();
-
-	let mut binop_precedence = HashMap::new();
-	binop_precedence.insert('<', 10);
-	binop_precedence.insert('+', 20);
-	binop_precedence.insert('-', 20);
-	binop_precedence.insert('*', 40);
-
 	let mut line = String::new();
 
-	let mut generator = Generator::new();
+	#[cfg(feature = "llvm")]
+	let context = Context::create();
+	let mut generator = Generator::new(
+		#[cfg(feature = "llvm")]
+		&context,
+	);
 
 	let mut anon_index = 0;
 
@@ -40,7 +39,7 @@ fn main() {
 		stdin().read_line(&mut line).unwrap();
 
 		let mut lexer = lexer::Lexer::new(&line);
-		let item = match parser::Parser::new(&mut lexer, &mut binop_precedence).parse_repl() {
+		let item = match parser::Parser::new(&mut lexer).parse_repl() {
 			Ok(item) => item,
 			Err(msg) => {
 				eprintln!("error: {msg}");
@@ -50,23 +49,17 @@ fn main() {
 
 		match item {
 			ReplItem::Expr(expr) => {
-				let fn_ = Function {
-					proto: Prototype {
-						name: Ident(format!("__anon_{anon_index}")),
-						args: Vec::new(),
-					},
-					body: expr,
-				};
+				let func = Function::new_anon(anon_index, expr);
 				anon_index += 1;
 
-				let fn_val = generator.function(&fn_).unwrap();
-				println!("{}", fn_val());
+				let fn_val = generator.function(&func).unwrap();
+				println!("{}", generator.call_fn(fn_val).unwrap());
 			}
 			ReplItem::Definition(function) => {
 				generator.function(&function).unwrap();
 			}
 			ReplItem::Extern(proto) => {
-				generator.prototype(&proto, Linkage::Import).unwrap();
+				generator.extern_(&proto).unwrap();
 			}
 		}
 	}

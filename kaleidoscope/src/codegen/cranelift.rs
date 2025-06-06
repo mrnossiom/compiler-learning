@@ -108,6 +108,7 @@ impl CodeGen for Generator {
 			functions: &self.functions,
 			module: &mut self.module,
 			values,
+			variable_generator: &mut self.variable_generator,
 		};
 
 		let return_value = match generator.expr(&function.body) {
@@ -175,6 +176,7 @@ pub struct FunctionGenerator<'a> {
 	functions: &'a HashMap<Ident, CompiledFunction>,
 	module: &'a mut JITModule,
 	values: HashMap<Ident, Variable>,
+	variable_generator: &'a mut VariableGenerator,
 }
 
 impl FunctionGenerator<'_> {
@@ -197,6 +199,7 @@ impl FunctionGenerator<'_> {
 
 					Operator::Gt => self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs),
 					Operator::Lt => self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs),
+					Operator::Eq => self.builder.ins().icmp(IntCC::Equal, lhs, rhs),
 				}
 			}
 			Expr::FnCall { ident, args } => match self.functions.get(ident) {
@@ -252,6 +255,54 @@ impl FunctionGenerator<'_> {
 				self.builder.seal_block(cont_block);
 
 				self.builder.block_params(cont_block)[0]
+			}
+			Expr::ForLoop {
+				init_name,
+				init,
+				check,
+				increment,
+				body,
+			} => {
+				let index = self.expr(init)?;
+
+				let loop_block = self.builder.create_block();
+				let post_loop_block = self.builder.create_block();
+
+				// index
+				let index_value = self.builder.append_block_param(loop_block, types::I64);
+				let index_var = self
+					.variable_generator
+					.create_var(&mut self.builder, index_value);
+				self.values.insert(init_name.clone(), index_var);
+
+				self.builder.ins().jump(loop_block, &[index.into()]);
+
+				self.builder.switch_to_block(loop_block);
+
+				self.expr(body)?;
+
+				let step_val = if let Some(increment) = increment {
+					self.expr(increment)?
+				} else {
+					self.builder.ins().iconst(types::I64, 1)
+				};
+				let next_val = self.builder.ins().iadd(index_value, step_val);
+
+				let end_cond = self.expr(check)?;
+
+				self.builder.ins().brif(
+					end_cond,
+					loop_block,
+					&[next_val.into()],
+					post_loop_block,
+					&[],
+				);
+				self.builder.seal_block(loop_block);
+
+				self.builder.switch_to_block(post_loop_block);
+				self.builder.seal_block(post_loop_block);
+
+				self.builder.ins().iconst(types::I64, 0)
 			}
 		};
 

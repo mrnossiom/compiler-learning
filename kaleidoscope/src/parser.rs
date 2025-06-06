@@ -75,6 +75,36 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 		})
 	}
 
+	/// *loop* ::= `for` *ident* = *expr* `,` *expr* ( `,` *expr* )? `in` *expr*
+	fn parse_for_expr(&mut self) -> Result<Expr, &'static str> {
+		assert_eq!(self.tokens.next(), Some(Token::For));
+		let Some(Token::Ident(ident)) = self.tokens.next() else {
+			todo!()
+		};
+		assert_eq!(self.tokens.next(), Some(Token::Operator(Operator::Eq)));
+		let init = Box::new(self.parse_expr()?);
+		assert_eq!(self.tokens.next(), Some(Token::Comma));
+		let check = Box::new(self.parse_expr()?);
+
+		let increment =
+			if self.tokens.next_if(|token| matches!(token, Token::Comma)) == Some(Token::Comma) {
+				Some(Box::new(self.parse_expr()?))
+			} else {
+				None
+			};
+
+		assert_eq!(self.tokens.next(), Some(Token::In));
+		let body = Box::new(self.parse_expr()?);
+
+		Ok(Expr::ForLoop {
+			init_name: ident,
+			init,
+			check,
+			increment,
+			body,
+		})
+	}
+
 	/// *primary*
 	///     ::= *identifier-expr*
 	///     ::= *number-expr*
@@ -85,6 +115,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 			Some(Token::Ident(_)) => self.parse_identifier_expr(),
 			Some(Token::Number(_)) => self.parse_num_literal_expr(),
 			Some(Token::If) => self.parse_if_expr(),
+			Some(Token::For) => self.parse_for_expr(),
 			_ => todo!(),
 		}
 	}
@@ -194,6 +225,13 @@ pub enum Expr {
 		condition: Box<Expr>,
 		consequence: Box<Expr>,
 		alternative: Box<Expr>,
+	},
+	ForLoop {
+		init_name: Ident,
+		init: Box<Expr>,
+		check: Box<Expr>,
+		increment: Option<Box<Expr>>,
+		body: Box<Expr>,
 	},
 }
 

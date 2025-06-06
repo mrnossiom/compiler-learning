@@ -11,6 +11,7 @@ pub enum Token {
 	Operator(Operator),
 
 	Delimiter(char),
+	Comma,
 
 	// Keywords
 	Def,
@@ -19,6 +20,9 @@ pub enum Token {
 	If,
 	Then,
 	Else,
+
+	For,
+	In,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,14 +34,17 @@ pub enum Operator {
 
 	Gt,
 	Lt,
+
+	Eq,
 }
 
 impl Operator {
 	pub const fn precedence(self) -> u32 {
 		match self {
-			Self::Minus | Self::Plus => 20,
 			Self::Mul | Self::Div => 40,
+			Self::Minus | Self::Plus => 20,
 			Self::Gt | Self::Lt => 10,
+			Self::Eq => 5,
 		}
 	}
 }
@@ -78,6 +85,9 @@ impl<'a> Lexer<'a> {
 						"if" => Token::If,
 						"then" => Token::Then,
 						"else" => Token::Else,
+
+						"for" => Token::For,
+						"in" => Token::In,
 						_ => Token::Ident(Ident(ident)),
 					}
 				}
@@ -99,6 +109,9 @@ impl<'a> Lexer<'a> {
 
 				'>' => Token::Operator(Operator::Gt),
 				'<' => Token::Operator(Operator::Lt),
+				'=' => Token::Operator(Operator::Eq),
+
+				',' => Token::Comma,
 
 				_ => todo!(),
 			};

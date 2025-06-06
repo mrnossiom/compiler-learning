@@ -16,8 +16,8 @@ target-lexicon = { version = "0.13", optional = true }
 inkwell = { version = "0.6", features = ["llvm18-1"], optional = true }
 
 [features]
-default = ["llvm"]
-# default = ["cranelift"]
+# default = ["llvm"]
+default = ["cranelift"]
 
 llvm = ["dep:inkwell"]
 cranelift = [

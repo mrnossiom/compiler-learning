@@ -67,3 +67,10 @@ fn main() {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Ident(String);
+
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+extern "C" fn putchard(i: i32) {
+	print!("{}", u8::try_from(i).unwrap() as char);
+	stdout().flush().unwrap();
+}

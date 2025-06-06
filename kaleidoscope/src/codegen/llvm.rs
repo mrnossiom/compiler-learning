@@ -69,6 +69,10 @@ impl<'ctx> Generator<'ctx> {
 				.builder
 				.build_int_compare(IntPredicate::SLT, left, right, "")
 				.unwrap(),
+			Operator::Eq => self
+				.builder
+				.build_int_compare(IntPredicate::EQ, left, right, "")
+				.unwrap(),
 		};
 		Ok(ins)
 	}
@@ -155,6 +159,73 @@ impl<'ctx> Generator<'ctx> {
 				phi.add_incoming(&[(&then_val, then_bb), (&else_val, else_bb)]);
 
 				phi.as_basic_value().into_int_value()
+			}
+			Expr::ForLoop {
+				init_name,
+				init,
+				check,
+				increment,
+				body,
+			} => {
+				let init_val = self.expr(init)?;
+
+				let func = self
+					.builder
+					.get_insert_block()
+					.unwrap()
+					.get_parent()
+					.unwrap();
+
+				let preloop_bb = self.builder.get_insert_block().unwrap();
+				let loop_bb = self.ctx.append_basic_block(func, "loop");
+
+				self.builder.build_unconditional_branch(loop_bb).unwrap();
+
+				self.builder.position_at_end(loop_bb);
+				let index = self
+					.builder
+					.build_phi(self.ctx.i64_type(), "index")
+					.unwrap();
+				index.add_incoming(&[(&init_val, preloop_bb)]);
+				self.variables.insert(
+					init_name.clone(),
+					init_val.const_to_pointer(self.ctx.ptr_type(AddressSpace::default())),
+				);
+
+				self.expr(body)?;
+
+				let step_val = if let Some(val) = increment {
+					self.expr(val)?
+				} else {
+					self.ctx.i64_type().const_int(1, false)
+				};
+				let next_var = self
+					.builder
+					.build_int_add(index.as_basic_value().into_int_value(), step_val, "step")
+					.unwrap();
+
+				let end_cond = self.expr(check)?;
+				let cond = self
+					.builder
+					.build_int_compare(
+						IntPredicate::NE,
+						end_cond,
+						self.ctx.bool_type().const_int(0, false),
+						"end_cond",
+					)
+					.unwrap();
+
+				let loop_end = self.builder.get_insert_block().unwrap();
+				let after_bb = self.ctx.append_basic_block(func, "after_loop");
+
+				self.builder
+					.build_conditional_branch(cond, loop_bb, after_bb)
+					.unwrap();
+
+				self.builder.position_at_end(after_bb);
+				index.add_incoming(&[(&next_var, loop_end)]);
+
+				self.ctx.i64_type().const_int(0, false)
 			}
 		};
 

@@ -1,0 +1,48 @@
+extern putchard(c: uint);
+
+fn fibo(n: uint) {
+	a := 0;
+	b := 0;
+
+	i := n;
+	while n != 0 {
+		next := a + b;
+		a = b;
+		b = next;
+
+		n = n - 1;
+	}
+
+	b
+}
+
+fn num_to_ascii(n: uint) -> Option<uint> {
+	const NUM_ASCII_BASE := 48;
+	if (n <= 9) {
+		Some(NUM_ASCII_BASE + n)
+	} else {
+		None
+	}
+}
+
+fn print_num(n: uint) {
+	if (n == 0) {
+		putchard(num_to_ascii(0));
+	} else {
+		while n != 0 {
+			rest := n % 10;
+			n = n / 10;
+			putchard(num_to_ascii(rest));
+		}
+	}
+}
+
+fn main() {
+	n := 5;
+	while n != 0 {
+		res := fibo(5);
+		print_num(res);
+		
+		n = n - 1;
+	}
+}

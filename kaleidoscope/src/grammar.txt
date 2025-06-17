@@ -1,0 +1,57 @@
+module ::= item*
+
+# items
+item ::= item_extern | item_fn
+
+item_extern ::= kw_extern prototype semi
+item_fn ::= kw_fn prototype body
+
+# statements
+stmt ::= stmt_assign | stmt_loop | stmt_while
+
+stmt_assign ::= ident colon eq expr
+
+stmt_loop ::= kw_loop body
+stmt_while ::= kw_while expr body
+
+# expressions
+expr ::= literal | expr_operation | expr
+
+expr_operation ::= expr binop expr
+
+# fragments
+protoype ::= ident lparen argument* rparen semi
+argument ::= ident colon type
+
+body ::= lbrace stmt* expr? rbrace
+
+literal ::= lit_int | lit_float | lit_str
+
+type ::= ident
+
+# terminals
+ident ::= alpha+
+
+lit_int ::= digit+
+lit_float ::= digit+ dot digit+
+lit_str ::= dquote .* dquote
+
+alpha ::= [a-zA-Z]
+digit ::= [0-9]
+
+kw_extern = `extern`
+kw_extern = `fn`
+
+kw_loop = `loop`
+kw_while = `while`
+
+semi ::= `;`
+colon ::= `:`
+dot ::= `.`
+quote ::= `'`
+dquote ::= `"`
+
+lparen ::= `(`
+rparen ::= `)`
+lbrace ::= `{`
+rbrace ::= `}`

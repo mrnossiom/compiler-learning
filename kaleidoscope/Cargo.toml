@@ -4,6 +4,8 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
+
 # Cranelift backend
 cranelift = { version = "0.120", optional = true }
 cranelift-control = { version = "0.120", optional = true }

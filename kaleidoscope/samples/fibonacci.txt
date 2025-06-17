@@ -1,4 +1,4 @@
-extern putchard(c: uint);
+extern fn putchard(c: uint);
 
 fn fibo(n: uint) {
 	a := 0;
@@ -10,15 +10,15 @@ fn fibo(n: uint) {
 		a = b;
 		b = next;
 
-		n = n - 1;
+		n := n - 1;
 	}
 
 	b
 }
 
-fn num_to_ascii(n: uint) -> Option<uint> {
-	const NUM_ASCII_BASE := 48;
-	if (n <= 9) {
+fn num_to_ascii(n: uint) Option/*<uint>*/ {
+	/*const NUM_ASCII_BASE := 48;*/
+	if n <= 9 {
 		Some(NUM_ASCII_BASE + n)
 	} else {
 		None

@@ -50,6 +50,7 @@
 
             LLVM_SYS_181_PREFIX = pkgs.llvmPackages_18.llvm.dev;
             # RUST_LOG = "";
+            RUST_BACKTRACE = "1";
           };
         });
     };

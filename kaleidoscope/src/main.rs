@@ -13,7 +13,7 @@ mod parser;
 
 // type definition
 mod ast;
-mod thir;
+mod hir;
 
 mod ffi;
 
@@ -36,12 +36,12 @@ fn main() {
 	let content = std::fs::read_to_string(args.path).unwrap();
 
 	let ast = parser::Parser::new(&content).parse_file().unwrap();
+	dbg!(&ast);
 
 	let lcx = lowerer::LowerCtx::new();
 	let lowerer = lowerer::Lowerer::new(&lcx);
-	let thir = lowerer.lower_items(&ast);
-
-	dbg!(thir);
+	let hir = lowerer.lower_items(&ast);
+	dbg!(&hir);
 
 	#[cfg(feature = "llvm")]
 	let context = Context::create();

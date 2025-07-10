@@ -1,6 +1,6 @@
 use crate::{
 	Ident,
-	lexer::{Literal, Operator},
+	lexer::{BinOp, Literal},
 };
 
 #[derive(Debug)]
@@ -14,25 +14,25 @@ pub enum ExprKind {
 	Literal(Literal),
 
 	Binary {
-		op: Operator,
+		op: BinOp,
 		left: Box<ExprKind>,
 		right: Box<ExprKind>,
 	},
 	FnCall {
 		expr: Box<ExprKind>,
-		args: Vec<Box<ExprKind>>,
+		args: Vec<ExprKind>,
 	},
 
 	If {
-		condition: Box<ExprKind>,
-		consequence: Box<Block>,
-		alternative: Box<Block>,
+		cond: Box<ExprKind>,
+		conseq: Box<Block>,
+		altern: Option<Box<Block>>,
 	},
 }
 
 #[derive(Debug)]
 pub struct Block {
-	pub stmts: Vec<Box<StmtKind>>,
+	pub stmts: Vec<StmtKind>,
 }
 
 #[derive(Debug)]

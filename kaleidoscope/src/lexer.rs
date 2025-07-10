@@ -1,16 +1,16 @@
-use std::{iter::Peekable, str::Chars};
+use std::{collections::VecDeque, iter::Peekable, str::Chars};
 
 #[allow(clippy::enum_glob_use)]
-use self::{Delimiter::*, Keyword::*, Literal::*, Operator::*, TokenKind::*};
+use self::{BinOp::*, Delimiter::*, Keyword::*, Literal::*, TokenKind::*};
 use crate::Ident;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
 	Ident(Ident),
 	Keyword(Keyword),
 	Literal(Literal),
 
-	Operator(Operator),
+	BinOp(BinOp),
 
 	Open(Delimiter),
 	Close(Delimiter),
@@ -22,11 +22,15 @@ pub enum TokenKind {
 	Semi,
 	Dot,
 
+	/// `!`
+	Not,
+
 	/// `=`
 	Eq,
 
 	Unknown,
 
+	/// Used to reduce boilerplate with Option
 	Eof,
 }
 
@@ -61,7 +65,7 @@ pub enum Delimiter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Operator {
+pub enum BinOp {
 	Plus,
 	Minus,
 	Mul,
@@ -81,19 +85,15 @@ pub enum Operator {
 	EqEq,
 	/// `!=`
 	Ne,
-
-	/// `!`
-	Not,
 }
 
-impl Operator {
-	pub const fn precedence(self) -> Option<u32> {
+impl BinOp {
+	pub const fn precedence(self) -> u32 {
 		match self {
-			Self::Mul | Self::Div | Self::Mod => Some(40),
-			Self::Minus | Self::Plus => Some(30),
-			Self::Gt | Self::Ge | Self::Lt | Self::Le => Some(20),
-			Self::Ne | Self::EqEq => Some(10),
-			Self::Not => None,
+			Self::Mul | Self::Div | Self::Mod => 40,
+			Self::Minus | Self::Plus => 30,
+			Self::Gt | Self::Ge | Self::Lt | Self::Le => 20,
+			Self::Ne | Self::EqEq => 10,
 		}
 	}
 }
@@ -184,9 +184,9 @@ impl SimpleLexer<'_> {
 				'{' => Open(Brace),
 				'}' => Close(Brace),
 
-				'+' => Operator(Plus),
-				'-' => Operator(Minus),
-				'*' => Operator(Mul),
+				'+' => BinOp(Plus),
+				'-' => BinOp(Minus),
+				'*' => BinOp(Mul),
 				'/' => match self.chars.peek() {
 					Some('*') => {
 						// TODO: cleanup
@@ -196,15 +196,15 @@ impl SimpleLexer<'_> {
 						_ = self.chars.next();
 						continue;
 					}
-					_ => Operator(Div),
+					_ => BinOp(Div),
 				},
-				'%' => Operator(Mod),
+				'%' => BinOp(Mod),
 
-				'>' => Operator(Gt),
-				'<' => Operator(Lt),
+				'>' => BinOp(Gt),
+				'<' => BinOp(Lt),
 				'=' => Eq,
 
-				'!' => Operator(Not),
+				'!' => Not,
 
 				',' => Comma,
 				'.' => Dot,
@@ -228,36 +228,23 @@ impl Iterator for SimpleLexer<'_> {
 
 pub struct Lexer<'a> {
 	inner: Peekable<SimpleLexer<'a>>,
-}
 
-impl Iterator for Lexer<'_> {
-	type Item = TokenKind;
-	fn next(&mut self) -> Option<Self::Item> {
-		self.next_token()
-	}
+	buffer: VecDeque<TokenKind>,
 }
 
 impl TokenKind {
 	const fn maybe_glue(&self, other: &Self) -> Option<Self> {
 		let glued = match (self, other) {
-			(Eq, Eq) => Operator(EqEq),
-			(Operator(Gt), Eq) => Operator(Ge),
-			(Operator(Lt), Eq) => Operator(Le),
+			(Eq, Eq) => BinOp(EqEq),
+			(BinOp(Gt), Eq) => BinOp(Ge),
+			(BinOp(Lt), Eq) => BinOp(Le),
 
-			(Operator(Minus), Operator(Lt)) => Arrow,
-			(Operator(Not), Eq) => Operator(Ne),
+			(BinOp(Minus), BinOp(Lt)) => Arrow,
+			(Not, Eq) => BinOp(Ne),
 
 			(_, _) => return None,
 		};
 		Some(glued)
-	}
-}
-
-impl<'a> Lexer<'a> {
-	pub fn new(code: &'a str) -> Self {
-		let chars = code.chars().peekable();
-		let inner = SimpleLexer { chars }.peekable();
-		Self { inner }
 	}
 }
 
@@ -276,5 +263,57 @@ impl Lexer<'_> {
 				return Some(token);
 			}
 		}
+	}
+}
+
+impl<'a> Lexer<'a> {
+	pub fn new(code: &'a str) -> Self {
+		let chars = code.chars().peekable();
+		let inner = SimpleLexer { chars }.peekable();
+		Self {
+			inner,
+			buffer: VecDeque::new(),
+		}
+	}
+
+	pub fn peek(&mut self) -> TokenKind {
+		if let Some(tkn) = self.buffer.front() {
+			tkn.clone()
+		} else if let Some(tkn) = self.next_token() {
+			self.buffer.push_back(tkn.clone());
+			tkn
+		} else {
+			Eof
+		}
+	}
+
+	pub fn look_ahead(&mut self, n: usize) -> TokenKind {
+		if self.buffer.len() <= n {
+			// load more tokens
+			for _ in self.buffer.len()..=n {
+				if let Some(tkn) = self.next_token() {
+					self.buffer.push_back(tkn);
+				} else {
+					break;
+				}
+			}
+
+			self.buffer.back().cloned().unwrap_or(Eof)
+		} else if let Some(tkn) = self.buffer.get(n) {
+			tkn.clone()
+		} else {
+			Eof
+		}
+	}
+
+	pub fn next(&mut self) -> TokenKind {
+		self.buffer
+			.pop_front()
+			.or_else(|| self.next_token())
+			.unwrap_or(Eof)
+	}
+
+	pub fn bump(&mut self) {
+		_ = self.next();
 	}
 }

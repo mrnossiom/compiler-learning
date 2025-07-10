@@ -2,7 +2,7 @@ use bumpalo::Bump;
 
 use crate::{
 	ast,
-	thir::{self, ItemKind, StmtKind},
+	hir::{Block, Expr, ExprKind, FnDecl, Hir, ItemKind, Stmt, StmtKind},
 };
 
 #[derive(Debug)]
@@ -25,43 +25,68 @@ impl<'lcx> Lowerer<'lcx> {
 	pub const fn new(tcx: &'lcx LowerCtx) -> Self {
 		Self { tcx }
 	}
+
+	fn alloc<T>(&self, t: T) -> &'lcx T {
+		self.tcx.arena.alloc(t)
+	}
+
+	fn alloc_iter<T, I>(&self, i: I) -> &'lcx [T]
+	where
+		I: IntoIterator<Item = T>,
+		I::IntoIter: ExactSizeIterator,
+	{
+		self.tcx.arena.alloc_slice_fill_iter(i)
+	}
+
+	const fn mk_expr(&self, expr: ExprKind<'lcx>) -> Expr<'lcx> {
+		Expr {
+			ty: ast::TyKind::Infer,
+			kind: expr,
+		}
+	}
+
+	fn mk_expr_block(&self, expr: &'lcx Expr<'lcx>) -> Block<'lcx> {
+		Block {
+			stmts: self.alloc([]),
+			ret_expr: Some(expr),
+		}
+	}
 }
 
 impl<'lcx> Lowerer<'lcx> {
-	pub fn lower_items(&'lcx self, ast_items: &'lcx [ast::ItemKind]) -> thir::Thir<'lcx> {
-		let mut items = Vec::new();
+	pub fn lower_items(&'lcx self, ast_items: &'lcx [ast::ItemKind]) -> Hir<'lcx> {
+		let items = ast_items
+			.iter()
+			.map(|item_kind| self.lower_item_kind(item_kind));
 
-		for item_kind in ast_items {
-			items.push(self.lower_item_kind(item_kind));
+		Hir {
+			items: self.alloc_iter(items),
 		}
-
-		thir::Thir { items }
 	}
 
-	fn lower_item_kind(&'lcx self, item: &'lcx ast::ItemKind) -> &'lcx ItemKind<'lcx> {
-		let item = match item {
+	fn lower_item_kind(&'lcx self, item: &'lcx ast::ItemKind) -> ItemKind<'lcx> {
+		match item {
 			ast::ItemKind::Function { ident, decl, body } => ItemKind::Function {
 				ident: ident.clone(),
 				decl: self.lower_fn_decl(decl),
-				body: self.lower_fn_body(body),
+				body: self.alloc(self.lower_block(body)),
 			},
 			ast::ItemKind::Extern { ident, decl } => ItemKind::Extern {
 				ident: ident.clone(),
 				decl: self.lower_fn_decl(decl),
 			},
-		};
-		self.tcx.arena.alloc(item)
+		}
 	}
 
-	fn lower_fn_decl(&'lcx self, decl: &'lcx ast::FnDecl) -> &'lcx thir::FnDecl<'lcx> {
+	fn lower_fn_decl(&'lcx self, decl: &'lcx ast::FnDecl) -> &'lcx FnDecl<'lcx> {
 		let inputs = decl.args.iter().map(|(_ident, ty)| ty.to_owned());
-		self.tcx.arena.alloc(thir::FnDecl {
+		self.tcx.arena.alloc(FnDecl {
 			inputs: self.tcx.arena.alloc_slice_fill_iter(inputs),
 			output: &decl.ret,
 		})
 	}
 
-	fn lower_fn_body(&'lcx self, body: &'lcx ast::Block) -> &'lcx thir::Block<'lcx> {
+	fn lower_block(&'lcx self, body: &'lcx ast::Block) -> Block<'lcx> {
 		let mut stmts = Vec::new();
 		let mut ret_expr = None;
 
@@ -69,63 +94,96 @@ impl<'lcx> Lowerer<'lcx> {
 		while let [stmt, tail @ ..] = ast_stmts {
 			ast_stmts = tail;
 
-			let stmt_kind = match &**stmt {
+			let stmt_kind = match stmt {
 				ast::StmtKind::Loop { body } => todo!(),
 				// desugar to simple loop
-				ast::StmtKind::WhileLoop { check, body } => todo!(),
+				ast::StmtKind::WhileLoop { check, body } => self.lower_while_loop(check, body),
 				ast::StmtKind::ForLoop { pat, iter, body } => todo!(),
 
 				ast::StmtKind::Let { name, ty, value } => StmtKind::Let {
 					name: name.clone(),
-					value: self.lower_expr(value),
+					value: self.alloc(self.lower_expr(value)),
 					ty,
 				},
 				ast::StmtKind::Assign { target, value } => StmtKind::Assign {
 					target: target.clone(),
-					value: self.lower_expr(value),
+					value: self.alloc(self.lower_expr(value)),
 				},
 
 				ast::StmtKind::Expr(expr) => {
-					let expr = self.lower_expr(expr);
+					let expr = self.alloc(self.lower_expr(expr));
 					StmtKind::Expr(expr)
 				}
 
 				ast::StmtKind::ExprRet(expr) => {
-					let expr = self.lower_expr(expr);
+					let expr = self.alloc(self.lower_expr(expr));
 					if tail.is_empty() {
 						ret_expr = Some(expr);
 						continue;
 					}
-					todo!("accept otherwise? or error?")
+					todo!("accept otherwise? or error?, {stmt:?} and {tail:?}")
 				}
 
 				ast::StmtKind::Empty => continue,
 			};
 
-			stmts.push(thir::Stmt { kind: stmt_kind });
+			stmts.push(Stmt { kind: stmt_kind });
 		}
 
-		self.tcx.arena.alloc(thir::Block {
+		Block {
 			stmts: self.tcx.arena.alloc(stmts),
 			ret_expr,
-		})
+		}
 	}
 
-	fn lower_expr(&'lcx self, expr: &ast::ExprKind) -> &'lcx thir::Expr {
-		let kind = match expr {
-			ast::ExprKind::Variable(ident) => thir::ExprKind::Variable(ident.clone()),
-			ast::ExprKind::Literal(lit) => thir::ExprKind::Literal(lit.clone()),
-			ast::ExprKind::Binary { op, left, right } => todo!(),
-			ast::ExprKind::FnCall { expr, args } => todo!(),
-			ast::ExprKind::If {
-				condition,
-				consequence,
-				alternative,
-			} => todo!(),
+	/// Lower an AST `while cond { body }` to an HIR `loop { if cond { body } else { break } }`
+	fn lower_while_loop(
+		&'lcx self,
+		cond: &'lcx ast::ExprKind,
+		body: &'lcx ast::Block,
+	) -> StmtKind<'lcx> {
+		let if_expr = ExprKind::If {
+			cond: self.alloc(self.lower_expr(cond)),
+			conseq: self.alloc(self.lower_block(body)),
+			altern: Some(
+				self.alloc(self.mk_expr_block(self.alloc(self.mk_expr(ExprKind::Break(None))))),
+			),
 		};
-		self.tcx.arena.alloc(thir::Expr {
+		let loop_blk = self.mk_expr_block(self.alloc(self.mk_expr(if_expr)));
+		StmtKind::Loop {
+			block: self.alloc(loop_blk),
+		}
+	}
+
+	fn lower_expr(&'lcx self, expr: &'lcx ast::ExprKind) -> Expr<'lcx> {
+		let kind = match expr {
+			ast::ExprKind::Variable(ident) => ExprKind::Variable(ident.clone()),
+			ast::ExprKind::Literal(lit) => ExprKind::Literal(lit.clone()),
+			ast::ExprKind::Binary { op, left, right } => ExprKind::Binary(
+				*op,
+				self.alloc(self.lower_expr(left)),
+				self.alloc(self.lower_expr(right)),
+			),
+			ast::ExprKind::FnCall { expr, args } => {
+				let args = self.alloc_iter(args.iter().map(|e| self.lower_expr(e)));
+				ExprKind::FnCall {
+					expr: self.alloc(self.lower_expr(expr)),
+					args,
+				}
+			}
+			ast::ExprKind::If {
+				cond,
+				conseq,
+				altern,
+			} => ExprKind::If {
+				cond: self.alloc(self.lower_expr(cond)),
+				conseq: self.alloc(self.lower_block(conseq)),
+				altern: altern.as_ref().map(|a| self.alloc(self.lower_block(a))),
+			},
+		};
+		Expr {
 			ty: ast::TyKind::Infer,
 			kind,
-		})
+		}
 	}
 }

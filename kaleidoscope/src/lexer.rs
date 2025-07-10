@@ -46,7 +46,10 @@ pub enum Keyword {
 	If,
 	Else,
 
+	Loop,
 	While,
+	For,
+	In,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +136,10 @@ impl SimpleLexer<'_> {
 						"if" => Keyword(If),
 						"else" => Keyword(Else),
 
+						"loop" => Keyword(Loop),
 						"while" => Keyword(While),
+						"for" => Keyword(For),
+						"in" => Keyword(In),
 						_ => TokenKind::Ident(Ident(ident)),
 					}
 				}

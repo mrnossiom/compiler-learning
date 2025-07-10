@@ -4,7 +4,9 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
+bumpalo = "3"
 clap = { version = "4", features = ["derive"] }
+index_vec = "0.1"
 
 # Cranelift backend
 cranelift = { version = "0.120", optional = true }

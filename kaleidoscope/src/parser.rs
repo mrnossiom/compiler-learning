@@ -1,11 +1,12 @@
+//! Tokens to AST parsing logic
+
 use std::borrow::Cow;
 
 #[allow(clippy::enum_glob_use)]
 use crate::lexer::{Delimiter::*, Keyword::*, Literal::*, TokenKind::*};
 use crate::{
-	Ident,
 	ast::{Block, ExprKind, FnDecl, ItemKind, StmtKind, TyKind},
-	lexer::{Delimiter, Lexer, TokenKind},
+	lexer::{Delimiter, Ident, Lexer, TokenKind},
 };
 
 pub type PResult<T> = Result<T, Cow<'static, str>>;

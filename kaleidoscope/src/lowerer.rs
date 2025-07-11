@@ -1,3 +1,5 @@
+//! AST to HIR lowering logic
+
 use bumpalo::Bump;
 
 use crate::{

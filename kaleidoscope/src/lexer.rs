@@ -1,8 +1,10 @@
+//! Source code to tokens lexing logic
 use std::{collections::VecDeque, iter::Peekable, str::Chars};
 
 #[allow(clippy::enum_glob_use)]
 use self::{BinOp::*, Delimiter::*, Keyword::*, Literal::*, TokenKind::*};
-use crate::Ident;
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Ident(String);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {

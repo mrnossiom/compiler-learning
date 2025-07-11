@@ -1,4 +1,4 @@
-//! Kaleidoscope
+//! # Kaleidoscope
 
 use std::path::PathBuf;
 
@@ -11,9 +11,10 @@ mod lexer;
 mod lowerer;
 mod parser;
 
-// type definition
+// IRs
 mod ast;
 mod hir;
+mod tbir;
 
 mod ffi;
 
@@ -35,14 +36,21 @@ fn main() {
 
 	let content = std::fs::read_to_string(args.path).unwrap();
 
+	// parsing source
 	let ast = parser::Parser::new(&content).parse_file().unwrap();
 	dbg!(&ast);
 
+	// lowering to HIR
 	let lcx = lowerer::LowerCtx::new();
 	let lowerer = lowerer::Lowerer::new(&lcx);
 	let hir = lowerer.lower_items(&ast);
 	dbg!(&hir);
 
+	// TODO: type collection and typeck HIR
+
+	// TODO: lower HIR bodies to TBIR
+
+	// codegen TBIR bodies
 	#[cfg(feature = "llvm")]
 	let context = Context::create();
 	// let mut generator = Generator::new(
@@ -50,6 +58,3 @@ fn main() {
 	// 	&context,
 	// );
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct Ident(String);

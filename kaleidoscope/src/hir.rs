@@ -1,4 +1,9 @@
-use crate::{Ident, ast, lexer};
+//! Higher IR
+
+use crate::{
+	ast,
+	lexer::{self, Ident},
+};
 
 #[derive(Debug)]
 pub struct Hir<'lcx> {

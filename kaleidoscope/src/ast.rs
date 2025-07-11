@@ -1,12 +1,6 @@
-use crate::{
-	Ident,
-	lexer::{BinOp, Literal},
-};
+//! Abstract Syntax Tree
 
-#[derive(Debug)]
-pub struct NumberExpr {
-	pub value: i64,
-}
+use crate::lexer::{BinOp, Ident, Literal};
 
 #[derive(Debug)]
 pub enum ExprKind {
@@ -39,12 +33,6 @@ pub struct Block {
 pub struct FnDecl {
 	pub args: Vec<(Ident, TyKind)>,
 	pub ret: TyKind,
-}
-
-#[derive(Debug)]
-pub struct Function {
-	pub proto: FnDecl,
-	pub body: Block,
 }
 
 #[derive(Debug, Clone)]

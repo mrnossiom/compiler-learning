@@ -28,9 +28,9 @@ pub enum ItemKind<'lcx> {
 	},
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FnDecl<'lcx> {
-	pub inputs: &'lcx [ast::TyKind],
+	pub inputs: &'lcx [(Ident, ast::TyKind)],
 	pub output: &'lcx ast::TyKind,
 }
 
@@ -68,7 +68,6 @@ pub enum StmtKind<'lcx> {
 
 #[derive(Debug)]
 pub struct Expr<'lcx> {
-	pub ty: ast::TyKind,
 	pub kind: ExprKind<'lcx>,
 }
 

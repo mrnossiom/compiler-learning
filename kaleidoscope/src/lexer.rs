@@ -3,8 +3,15 @@ use std::{collections::VecDeque, iter::Peekable, str::Chars};
 
 #[allow(clippy::enum_glob_use)]
 use self::{BinOp::*, Delimiter::*, Keyword::*, Literal::*, TokenKind::*};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Ident(String);
+
+impl AsRef<str> for Ident {
+	fn as_ref(&self) -> &str {
+		&self.0
+	}
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
@@ -113,17 +120,13 @@ const fn is_ident_continue(c: char) -> bool {
 }
 
 impl SimpleLexer<'_> {
-	pub fn next_simple_token(&mut self) -> Option<TokenKind> {
+	pub fn next_simple_token(&mut self) -> Option<(bool, TokenKind)> {
+		let mut trailing_whitespace = false;
+
 		loop {
 			let chr = self.chars.next()?;
 
 			let token = match chr {
-				'#' => {
-					// Eat the whole line
-					while self.chars.next_if(|c| *c != '\n').is_some() {}
-					continue;
-				}
-
 				c if is_ident_start(c) => {
 					let mut ident = c.to_string();
 					while let Some(c) = self.chars.next_if(|c| is_ident_continue(*c)) {
@@ -142,6 +145,7 @@ impl SimpleLexer<'_> {
 						"while" => Keyword(While),
 						"for" => Keyword(For),
 						"in" => Keyword(In),
+
 						_ => TokenKind::Ident(Ident(ident)),
 					}
 				}
@@ -175,6 +179,7 @@ impl SimpleLexer<'_> {
 
 				// Non-significative whitespace
 				c if c.is_ascii_whitespace() => {
+					trailing_whitespace = true;
 					continue;
 				}
 
@@ -190,12 +195,17 @@ impl SimpleLexer<'_> {
 				'-' => BinOp(Minus),
 				'*' => BinOp(Mul),
 				'/' => match self.chars.peek() {
+					Some('/') => {
+						// eat the whole line
+						while self.chars.next_if(|c| *c != '\n').is_some() {}
+						trailing_whitespace = true;
+						continue;
+					}
 					Some('*') => {
-						// TODO: cleanup
-						while let (Some(c1), Some(c2)) = (self.chars.next(), self.chars.peek())
-							&& (c1, *c2) != ('*', '/')
-						{}
+						// eat the star
 						_ = self.chars.next();
+						self.skip_block_comment();
+						trailing_whitespace = true;
 						continue;
 					}
 					_ => BinOp(Div),
@@ -216,13 +226,30 @@ impl SimpleLexer<'_> {
 				_ => Unknown,
 			};
 
-			return Some(token);
+			return Some((trailing_whitespace, token));
 		}
+	}
+
+	fn skip_block_comment(&mut self) {
+		let mut count = 0;
+
+		// handle nested block comments
+		while let (Some(c1), Some(c2)) = (self.chars.next(), self.chars.peek()) {
+			match (c1, c2) {
+				('/', '*') => count += 1,
+				('*', '/') if count == 0 => break,
+				('*', '/') => count -= 1,
+				(_, _) => {}
+			}
+		}
+
+		// eat the trailing slash
+		_ = self.chars.next();
 	}
 }
 
 impl Iterator for SimpleLexer<'_> {
-	type Item = TokenKind;
+	type Item = (bool, TokenKind);
 	fn next(&mut self) -> Option<Self::Item> {
 		self.next_simple_token()
 	}
@@ -252,13 +279,15 @@ impl TokenKind {
 
 impl Lexer<'_> {
 	fn next_token(&mut self) -> Option<TokenKind> {
-		let mut token = self.inner.next()?;
-		loop {
-			let Some(next) = self.inner.peek() else {
-				return Some(token);
-			};
+		let (_whitespace, mut token) = self.inner.next()?;
 
-			if let Some(glued_token) = token.maybe_glue(next) {
+		loop {
+			// try to glue stuff
+			if let Some((whitespace, next)) = self.inner.peek()
+				// without whitespace between them
+				&& !*whitespace
+				&& let Some(glued_token) = token.maybe_glue(next)
+			{
 				_ = self.inner.next();
 				token = glued_token;
 			} else {

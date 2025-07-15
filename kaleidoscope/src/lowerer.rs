@@ -41,10 +41,7 @@ impl<'lcx> Lowerer<'lcx> {
 	}
 
 	const fn mk_expr(&self, expr: ExprKind<'lcx>) -> Expr<'lcx> {
-		Expr {
-			ty: ast::TyKind::Infer,
-			kind: expr,
-		}
+		Expr { kind: expr }
 	}
 
 	fn mk_expr_block(&self, expr: &'lcx Expr<'lcx>) -> Block<'lcx> {
@@ -81,7 +78,7 @@ impl<'lcx> Lowerer<'lcx> {
 	}
 
 	fn lower_fn_decl(&'lcx self, decl: &'lcx ast::FnDecl) -> &'lcx FnDecl<'lcx> {
-		let inputs = decl.args.iter().map(|(_ident, ty)| ty.to_owned());
+		let inputs = decl.args.iter().cloned().map(|(ident, ty)| (ident, ty));
 		self.tcx.arena.alloc(FnDecl {
 			inputs: self.tcx.arena.alloc_slice_fill_iter(inputs),
 			output: &decl.ret,
@@ -183,9 +180,7 @@ impl<'lcx> Lowerer<'lcx> {
 				altern: altern.as_ref().map(|a| self.alloc(self.lower_block(a))),
 			},
 		};
-		Expr {
-			ty: ast::TyKind::Infer,
-			kind,
-		}
+
+		Expr { kind }
 	}
 }

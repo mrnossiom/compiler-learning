@@ -1,29 +1,73 @@
 use std::collections::HashMap;
 
-use crate::{ast, hir, lexer};
+use crate::{ast, front::FrontCtx, hir, lexer};
 
 #[derive(Debug)]
-pub struct TyCtx {}
+pub struct TyCtx<'fcx> {
+	fcx: &'fcx FrontCtx,
+}
 
-impl TyCtx {
-	pub const fn new() -> Self {
-		Self {}
+impl<'fcx> TyCtx<'fcx> {
+	pub const fn new(fcx: &'fcx FrontCtx) -> Self {
+		Self { fcx }
 	}
 }
 
-type FnTyEnv = HashMap<lexer::Ident, Vec<TyKind>>;
+impl TyCtx<'_> {
+	fn lower_ty(&self, ty: &ast::TyKind) -> TyKind {
+		match ty {
+			ast::TyKind::Path(path, _generics) => self.lower_path_ty(path[0]),
+			ast::TyKind::Unit => TyKind::Unit,
+			ast::TyKind::Infer => TyKind::Infer,
+		}
+	}
 
-impl TyCtx {
+	fn lower_path_ty(&self, path: ast::Ident) -> TyKind {
+		match self.fcx.symbols.resolve(path.name).as_str() {
+			"number" => TyKind::Integer,
+			"str" => TyKind::Str,
+
+			// TODO: remove
+			"uint" => TyKind::Integer,
+
+			_ => panic!("ty undefined {path:?}"),
+		}
+	}
+}
+
+pub struct Collector<'tcx> {
+	tcx: &'tcx TyCtx<'tcx>,
+}
+
+impl<'tcx> Collector<'tcx> {
+	pub const fn new(tcx: &'tcx TyCtx) -> Self {
+		Self { tcx }
+	}
+}
+
+pub struct Inferer<'tcx> {
+	tcx: &'tcx TyCtx<'tcx>,
+}
+
+type FnTyEnv = HashMap<ast::Ident, Vec<TyKind>>;
+
+impl<'tcx> Inferer<'tcx> {
+	pub const fn new(tcx: &'tcx TyCtx) -> Self {
+		Self { tcx }
+	}
+}
+
+impl Inferer<'_> {
 	pub fn infer_fn<'lcx>(&self, decl: &'lcx hir::FnDecl<'lcx>, body: &'lcx hir::Block<'lcx>) {
 		let mut env: FnTyEnv = HashMap::new();
 
 		// init context with function arguments
 		decl.inputs.iter().for_each(|(ident, arg_ty)| {
-			let arg_ty = self.lower_ty(arg_ty);
-			env.entry(ident.clone()).or_default().push(arg_ty);
+			let arg_ty = self.tcx.lower_ty(arg_ty);
+			env.entry(*ident).or_default().push(arg_ty);
 		});
 
-		let expected_ret_ty = self.lower_ty(decl.output);
+		let expected_ret_ty = self.tcx.lower_ty(decl.output);
 		let ret_ty = self.infer_block(&mut env, body);
 		self.unify(&expected_ret_ty, &ret_ty);
 	}
@@ -46,11 +90,11 @@ impl TyCtx {
 				self.infer_expr(env, expr);
 			}
 			hir::StmtKind::Let { name, value, ty } => {
-				let explicit_ty = self.lower_ty(ty);
+				let explicit_ty = self.tcx.lower_ty(ty);
 				let expr_ty = self.infer_expr(env, value);
 				self.unify(&explicit_ty, &expr_ty);
 
-				env.entry(name.clone()).or_default().push(expr_ty);
+				env.entry(*name).or_default().push(expr_ty);
 			}
 			hir::StmtKind::Assign { target, value } => {
 				let target_ty = env.get(target).unwrap().last().unwrap().clone();
@@ -65,15 +109,14 @@ impl TyCtx {
 	}
 
 	fn infer_expr<'lcx>(&self, env: &mut FnTyEnv, expr: &'lcx hir::Expr<'lcx>) -> TyKind {
-		dbg!(&env, expr);
 		match &expr.kind {
 			hir::ExprKind::Variable(ident) => {
 				env.get(ident).and_then(|v| v.last()).unwrap().clone()
 			}
-			hir::ExprKind::Literal(lit) => match lit {
-				lexer::Literal::Integer(_) => TyKind::Integer,
-				lexer::Literal::Float(_) => TyKind::Float,
-				lexer::Literal::Str(_) => TyKind::Str,
+			hir::ExprKind::Literal(lit, _ident) => match lit {
+				lexer::LiteralKind::Integer => TyKind::Integer,
+				lexer::LiteralKind::Float => TyKind::Float,
+				lexer::LiteralKind::Str => TyKind::Str,
 			},
 			hir::ExprKind::Binary(op, left, right) => {
 				let left = self.infer_expr(env, left);
@@ -82,6 +125,7 @@ impl TyCtx {
 
 				// TODO: unify both with number infer
 
+				#[allow(clippy::enum_glob_use)]
 				{
 					use lexer::BinOp::*;
 					match op {
@@ -122,7 +166,7 @@ impl TyCtx {
 }
 
 /// Unification
-impl TyCtx {
+impl Inferer<'_> {
 	fn unify(&self, expected: &TyKind, actual: &TyKind) -> TyKind {
 		#[expect(clippy::match_same_arms)]
 		match (expected, actual) {
@@ -133,28 +177,6 @@ impl TyCtx {
 			(_, _) if expected == actual => expected.clone(),
 
 			(_, _) => todo!("ty mismatch {expected:?} vs. {actual:?}"),
-		}
-	}
-}
-
-impl TyCtx {
-	fn lower_ty(&self, ty: &ast::TyKind) -> TyKind {
-		match ty {
-			ast::TyKind::Path(path) => self.lower_path_ty(path),
-			ast::TyKind::Unit => TyKind::Unit,
-			ast::TyKind::Infer => TyKind::Infer,
-		}
-	}
-
-	fn lower_path_ty(&self, path: &lexer::Ident) -> TyKind {
-		match path.as_ref() {
-			"number" => TyKind::Integer,
-			"str" => TyKind::Str,
-
-			// TODO: remove
-			"uint" => TyKind::Integer,
-
-			_ => panic!("ty undefined {path:?}"),
 		}
 	}
 }
@@ -180,3 +202,9 @@ pub enum TyKind {
 	// move elsewhere?
 	Infer,
 }
+
+// #[derive(Debug, Clone, PartialEq, Eq)]
+// pub enum InferrableTy {
+// 	Concrete(TyKind),
+// 	Infer,
+// }

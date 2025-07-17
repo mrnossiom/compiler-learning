@@ -1,9 +1,6 @@
 //! Higher IR
 
-use crate::{
-	ast,
-	lexer::{self, Ident},
-};
+use crate::{ast, front::Symbol, lexer};
 
 #[derive(Debug)]
 pub struct Hir<'lcx> {
@@ -18,11 +15,11 @@ pub struct Hir<'lcx> {
 #[derive(Debug)]
 pub enum ItemKind<'lcx> {
 	Extern {
-		ident: Ident,
+		ident: ast::Ident,
 		decl: &'lcx FnDecl<'lcx>,
 	},
 	Function {
-		ident: Ident,
+		ident: ast::Ident,
 		decl: &'lcx FnDecl<'lcx>,
 		body: &'lcx Block<'lcx>,
 	},
@@ -30,7 +27,7 @@ pub enum ItemKind<'lcx> {
 
 #[derive(Debug, Clone)]
 pub struct FnDecl<'lcx> {
-	pub inputs: &'lcx [(Ident, ast::TyKind)],
+	pub inputs: &'lcx [(ast::Ident, ast::TyKind)],
 	pub output: &'lcx ast::TyKind,
 }
 
@@ -50,14 +47,14 @@ pub enum StmtKind<'lcx> {
 	Expr(&'lcx Expr<'lcx>),
 
 	Let {
-		name: Ident,
+		name: ast::Ident,
 		value: &'lcx Expr<'lcx>,
 		ty: &'lcx ast::TyKind,
 	},
 
 	// move these to expr
 	Assign {
-		target: Ident,
+		target: ast::Ident,
 		value: &'lcx Expr<'lcx>,
 	},
 
@@ -73,8 +70,8 @@ pub struct Expr<'lcx> {
 
 #[derive(Debug)]
 pub enum ExprKind<'lcx> {
-	Variable(Ident),
-	Literal(lexer::Literal),
+	Variable(ast::Ident),
+	Literal(lexer::LiteralKind, Symbol),
 
 	Binary(lexer::BinOp, &'lcx Expr<'lcx>, &'lcx Expr<'lcx>),
 

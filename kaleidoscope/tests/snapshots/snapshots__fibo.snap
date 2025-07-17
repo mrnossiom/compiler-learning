@@ -1,0 +1,341 @@
+---
+source: tests/snapshots.rs
+expression: ast
+---
+[
+    Extern {
+        ident: Ident(i#0, s#10..18),
+        decl: FnDecl {
+            args: [
+                (
+                    Ident(i#1, s#19..20),
+                    Path(
+                        [
+                            Ident(i#2, s#22..26),
+                        ],
+                        [],
+                    ),
+                ),
+            ],
+            ret: Unit,
+        },
+    },
+    Function {
+        ident: Ident(i#3, s#33..37),
+        decl: FnDecl {
+            args: [
+                (
+                    Ident(i#4, s#38..39),
+                    Path(
+                        [
+                            Ident(i#2, s#41..45),
+                        ],
+                        [],
+                    ),
+                ),
+            ],
+            ret: Path(
+                [
+                    Ident(i#2, s#47..51),
+                ],
+                [],
+            ),
+        },
+        body: Block {
+            stmts: [
+                Let {
+                    name: Ident(i#5, s#55..56),
+                    ty: Infer,
+                    value: Literal(
+                        Integer,
+                        i#6,
+                    ),
+                },
+                Let {
+                    name: Ident(i#7, s#64..65),
+                    ty: Infer,
+                    value: Literal(
+                        Integer,
+                        i#6,
+                    ),
+                },
+                Let {
+                    name: Ident(i#8, s#74..75),
+                    ty: Infer,
+                    value: Variable(
+                        Ident(i#4, s#79..80),
+                    ),
+                },
+                WhileLoop {
+                    check: Binary {
+                        op: Ne,
+                        left: Variable(
+                            Ident(i#4, s#89..90),
+                        ),
+                        right: Literal(
+                            Integer,
+                            i#6,
+                        ),
+                    },
+                    body: Block {
+                        stmts: [
+                            Let {
+                                name: Ident(i#9, s#100..104),
+                                ty: Infer,
+                                value: Binary {
+                                    op: Plus,
+                                    left: Variable(
+                                        Ident(i#5, s#108..109),
+                                    ),
+                                    right: Variable(
+                                        Ident(i#7, s#112..113),
+                                    ),
+                                },
+                            },
+                            Assign {
+                                target: Ident(i#5, s#117..118),
+                                value: Variable(
+                                    Ident(i#7, s#121..122),
+                                ),
+                            },
+                            Assign {
+                                target: Ident(i#7, s#126..127),
+                                value: Variable(
+                                    Ident(i#9, s#130..134),
+                                ),
+                            },
+                            Assign {
+                                target: Ident(i#4, s#139..140),
+                                value: Binary {
+                                    op: Minus,
+                                    left: Variable(
+                                        Ident(i#4, s#143..144),
+                                    ),
+                                    right: Literal(
+                                        Integer,
+                                        i#10,
+                                    ),
+                                },
+                            },
+                        ],
+                        span: s#96..152,
+                    },
+                },
+                ExprRet(
+                    Variable(
+                        Ident(i#7, s#155..156),
+                    ),
+                ),
+            ],
+            span: s#52..158,
+        },
+    },
+    Function {
+        ident: Ident(i#11, s#337..346),
+        decl: FnDecl {
+            args: [
+                (
+                    Ident(i#4, s#347..348),
+                    Path(
+                        [
+                            Ident(i#2, s#350..354),
+                        ],
+                        [],
+                    ),
+                ),
+            ],
+            ret: Unit,
+        },
+        body: Block {
+            stmts: [
+                ExprRet(
+                    If {
+                        cond: Binary {
+                            op: EqEq,
+                            left: Variable(
+                                Ident(i#4, s#362..363),
+                            ),
+                            right: Literal(
+                                Integer,
+                                i#6,
+                            ),
+                        },
+                        conseq: Block {
+                            stmts: [
+                                Expr(
+                                    FnCall {
+                                        expr: Variable(
+                                            Ident(i#0, s#373..381),
+                                        ),
+                                        args: [
+                                            FnCall {
+                                                expr: Variable(
+                                                    Ident(i#12, s#382..394),
+                                                ),
+                                                args: [
+                                                    Literal(
+                                                        Integer,
+                                                        i#6,
+                                                    ),
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                ),
+                            ],
+                            span: s#369..402,
+                        },
+                        altern: Some(
+                            Block {
+                                stmts: [
+                                    WhileLoop {
+                                        check: Binary {
+                                            op: Ne,
+                                            left: Variable(
+                                                Ident(i#4, s#418..419),
+                                            ),
+                                            right: Literal(
+                                                Integer,
+                                                i#6,
+                                            ),
+                                        },
+                                        body: Block {
+                                            stmts: [
+                                                Let {
+                                                    name: Ident(i#13, s#430..434),
+                                                    ty: Infer,
+                                                    value: Binary {
+                                                        op: Mod,
+                                                        left: Variable(
+                                                            Ident(i#4, s#438..439),
+                                                        ),
+                                                        right: Literal(
+                                                            Integer,
+                                                            i#14,
+                                                        ),
+                                                    },
+                                                },
+                                                Assign {
+                                                    target: Ident(i#4, s#449..450),
+                                                    value: Binary {
+                                                        op: Div,
+                                                        left: Variable(
+                                                            Ident(i#4, s#453..454),
+                                                        ),
+                                                        right: Literal(
+                                                            Integer,
+                                                            i#14,
+                                                        ),
+                                                    },
+                                                },
+                                                Expr(
+                                                    FnCall {
+                                                        expr: Variable(
+                                                            Ident(i#0, s#464..472),
+                                                        ),
+                                                        args: [
+                                                            FnCall {
+                                                                expr: Variable(
+                                                                    Ident(i#12, s#473..485),
+                                                                ),
+                                                                args: [
+                                                                    Variable(
+                                                                        Ident(i#13, s#486..490),
+                                                                    ),
+                                                                ],
+                                                            },
+                                                        ],
+                                                    },
+                                                ),
+                                            ],
+                                            span: s#425..497,
+                                        },
+                                    },
+                                ],
+                                span: s#408..500,
+                            },
+                        ),
+                    },
+                ),
+            ],
+            span: s#356..502,
+        },
+    },
+    Function {
+        ident: Ident(i#15, s#507..511),
+        decl: FnDecl {
+            args: [],
+            ret: Unit,
+        },
+        body: Block {
+            stmts: [
+                Let {
+                    name: Ident(i#4, s#517..518),
+                    ty: Infer,
+                    value: Literal(
+                        Integer,
+                        i#16,
+                    ),
+                },
+                WhileLoop {
+                    check: Binary {
+                        op: Ne,
+                        left: Variable(
+                            Ident(i#4, s#532..533),
+                        ),
+                        right: Literal(
+                            Integer,
+                            i#6,
+                        ),
+                    },
+                    body: Block {
+                        stmts: [
+                            Let {
+                                name: Ident(i#17, s#543..546),
+                                ty: Infer,
+                                value: FnCall {
+                                    expr: Variable(
+                                        Ident(i#3, s#550..554),
+                                    ),
+                                    args: [
+                                        Literal(
+                                            Integer,
+                                            i#16,
+                                        ),
+                                    ],
+                                },
+                            },
+                            Expr(
+                                FnCall {
+                                    expr: Variable(
+                                        Ident(i#11, s#561..570),
+                                    ),
+                                    args: [
+                                        Variable(
+                                            Ident(i#17, s#571..574),
+                                        ),
+                                    ],
+                                },
+                            ),
+                            Assign {
+                                target: Ident(i#4, s#582..583),
+                                value: Binary {
+                                    op: Minus,
+                                    left: Variable(
+                                        Ident(i#4, s#586..587),
+                                    ),
+                                    right: Literal(
+                                        Integer,
+                                        i#10,
+                                    ),
+                                },
+                            },
+                        ],
+                        span: s#539..595,
+                    },
+                },
+            ],
+            span: s#514..597,
+        },
+    },
+]

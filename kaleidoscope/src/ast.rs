@@ -1,11 +1,35 @@
 //! Abstract Syntax Tree
 
-use crate::lexer::{BinOp, Ident, Literal};
+use std::fmt;
+
+use crate::{
+	front::Symbol,
+	lexer::{BinOp, LiteralKind, Span},
+};
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Ident {
+	pub name: Symbol,
+	pub span: Span,
+}
+
+impl Ident {
+	pub const fn new(name: Symbol, span: Span) -> Self {
+		Self { name, span }
+	}
+}
+
+impl fmt::Debug for Ident {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "Ident({:?}, {:?})", self.name, self.span)
+	}
+}
 
 #[derive(Debug)]
 pub enum ExprKind {
+	// Expression atomics
 	Variable(Ident),
-	Literal(Literal),
+	Literal(LiteralKind, Symbol),
 
 	Binary {
 		op: BinOp,
@@ -27,6 +51,7 @@ pub enum ExprKind {
 #[derive(Debug)]
 pub struct Block {
 	pub stmts: Vec<StmtKind>,
+	pub span: Span,
 }
 
 #[derive(Debug)]
@@ -37,11 +62,16 @@ pub struct FnDecl {
 
 #[derive(Debug, Clone)]
 pub enum TyKind {
-	Path(Ident),
+	Path(Vec<Ident>, Vec<TyKind>),
 
 	Unit,
 
 	Infer,
+}
+
+pub struct Item {
+	kind: ItemKind,
+	span: Span,
 }
 
 #[derive(Debug)]

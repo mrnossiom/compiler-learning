@@ -66,19 +66,19 @@ impl<'lcx> Lowerer<'lcx> {
 	fn lower_item_kind(&'lcx self, item: &'lcx ast::ItemKind) -> ItemKind<'lcx> {
 		match item {
 			ast::ItemKind::Function { ident, decl, body } => ItemKind::Function {
-				ident: ident.clone(),
+				ident: *ident,
 				decl: self.lower_fn_decl(decl),
 				body: self.alloc(self.lower_block(body)),
 			},
 			ast::ItemKind::Extern { ident, decl } => ItemKind::Extern {
-				ident: ident.clone(),
+				ident: *ident,
 				decl: self.lower_fn_decl(decl),
 			},
 		}
 	}
 
 	fn lower_fn_decl(&'lcx self, decl: &'lcx ast::FnDecl) -> &'lcx FnDecl<'lcx> {
-		let inputs = decl.args.iter().cloned().map(|(ident, ty)| (ident, ty));
+		let inputs = decl.args.iter().cloned();
 		self.tcx.arena.alloc(FnDecl {
 			inputs: self.tcx.arena.alloc_slice_fill_iter(inputs),
 			output: &decl.ret,
@@ -100,12 +100,12 @@ impl<'lcx> Lowerer<'lcx> {
 				ast::StmtKind::ForLoop { pat, iter, body } => todo!(),
 
 				ast::StmtKind::Let { name, ty, value } => StmtKind::Let {
-					name: name.clone(),
+					name: *name,
 					value: self.alloc(self.lower_expr(value)),
 					ty,
 				},
 				ast::StmtKind::Assign { target, value } => StmtKind::Assign {
-					target: target.clone(),
+					target: *target,
 					value: self.alloc(self.lower_expr(value)),
 				},
 
@@ -156,8 +156,8 @@ impl<'lcx> Lowerer<'lcx> {
 
 	fn lower_expr(&'lcx self, expr: &'lcx ast::ExprKind) -> Expr<'lcx> {
 		let kind = match expr {
-			ast::ExprKind::Variable(ident) => ExprKind::Variable(ident.clone()),
-			ast::ExprKind::Literal(lit) => ExprKind::Literal(lit.clone()),
+			ast::ExprKind::Variable(ident) => ExprKind::Variable(*ident),
+			ast::ExprKind::Literal(lit, ident) => ExprKind::Literal(*lit, *ident),
 			ast::ExprKind::Binary { op, left, right } => ExprKind::Binary(
 				*op,
 				self.alloc(self.lower_expr(left)),

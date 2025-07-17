@@ -1,31 +1,7 @@
-//! # Kaleidoscope
-
 use std::path::PathBuf;
 
 use clap::Parser;
-#[cfg(feature = "llvm")]
-use inkwell::context::Context;
-
-// mod codegen;
-mod lexer;
-mod lowerer;
-mod parser;
-mod ty;
-
-// IRs
-mod ast;
-mod hir;
-mod tbir;
-
-mod ffi;
-
-#[cfg(any(
-	not(any(feature = "llvm", feature = "cranelift")),
-	all(feature = "llvm", feature = "cranelift")
-))]
-compile_error!("You need to choose a single backend!");
-
-// type Result<T> = std::result::Result<T, &'static str>;
+use kaleidoscope::{front, hir, lowerer, parser, ty};
 
 #[derive(clap::Parser)]
 struct Args {
@@ -46,9 +22,10 @@ fn main() {
 }
 
 fn pipeline(args: &Args, source: &str) {
+	let fcx = front::FrontCtx::new();
+
 	// parsing source
-	let ast = parser::Parser::new(source).parse_file().unwrap();
-	insta::assert_debug_snapshot!(ast);
+	let ast = parser::Parser::new(&fcx, source).parse_file().unwrap();
 	if args.p_ast {
 		println!("{ast:#?}");
 	}
@@ -57,23 +34,26 @@ fn pipeline(args: &Args, source: &str) {
 	let lcx = lowerer::LowerCtx::new();
 	let lowerer = lowerer::Lowerer::new(&lcx);
 	let hir = lowerer.lower_items(&ast);
-	insta::assert_debug_snapshot!(hir);
 	if args.p_hir {
 		println!("{hir:#?}");
 	}
 
-	let tcx = ty::TyCtx::new();
+	// type collection, inference and analysis
+	let tcx = ty::TyCtx::new(&fcx);
+
+	// TODO: HIR type collection
+	let ty_collector = ty::Collector::new(&tcx);
+
+	// TODO: HIR typeck
+	let inferer = ty::Inferer::new(&tcx);
 	for item in hir.items {
 		match item {
 			hir::ItemKind::Extern { ident, decl } => {}
 			hir::ItemKind::Function { ident, decl, body } => {
-				tcx.infer_fn(decl, body);
+				inferer.infer_fn(decl, body);
 			}
 		}
 	}
-
-	// TODO: HIR type collection
-	// TODO: HIR typeck
 
 	// TODO: lower HIR bodies to TBIR
 

@@ -7,6 +7,8 @@ edition = "2024"
 bumpalo = "3"
 clap = { version = "4", features = ["derive"] }
 index_vec = "0.1"
+parking_lot = "0.12"
+string-interner = "0.19"
 
 # Cranelift backend
 cranelift = { version = "0.121", optional = true }

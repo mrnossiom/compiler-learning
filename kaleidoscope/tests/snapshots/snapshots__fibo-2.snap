@@ -1,0 +1,541 @@
+---
+source: tests/snapshots.rs
+expression: hir
+---
+Hir {
+    items: [
+        Extern {
+            ident: Ident(i#0, s#10..18),
+            decl: FnDecl {
+                inputs: [
+                    (
+                        Ident(i#1, s#19..20),
+                        Path(
+                            [
+                                Ident(i#2, s#22..26),
+                            ],
+                            [],
+                        ),
+                    ),
+                ],
+                output: Unit,
+            },
+        },
+        Function {
+            ident: Ident(i#3, s#33..37),
+            decl: FnDecl {
+                inputs: [
+                    (
+                        Ident(i#4, s#38..39),
+                        Path(
+                            [
+                                Ident(i#2, s#41..45),
+                            ],
+                            [],
+                        ),
+                    ),
+                ],
+                output: Path(
+                    [
+                        Ident(i#2, s#47..51),
+                    ],
+                    [],
+                ),
+            },
+            body: Block {
+                stmts: [
+                    Stmt {
+                        kind: Let {
+                            name: Ident(i#5, s#55..56),
+                            value: Expr {
+                                kind: Literal(
+                                    Integer,
+                                    i#6,
+                                ),
+                            },
+                            ty: Infer,
+                        },
+                    },
+                    Stmt {
+                        kind: Let {
+                            name: Ident(i#7, s#64..65),
+                            value: Expr {
+                                kind: Literal(
+                                    Integer,
+                                    i#6,
+                                ),
+                            },
+                            ty: Infer,
+                        },
+                    },
+                    Stmt {
+                        kind: Let {
+                            name: Ident(i#8, s#74..75),
+                            value: Expr {
+                                kind: Variable(
+                                    Ident(i#4, s#79..80),
+                                ),
+                            },
+                            ty: Infer,
+                        },
+                    },
+                    Stmt {
+                        kind: Loop {
+                            block: Block {
+                                stmts: [],
+                                ret_expr: Some(
+                                    Expr {
+                                        kind: If {
+                                            cond: Expr {
+                                                kind: Binary(
+                                                    Ne,
+                                                    Expr {
+                                                        kind: Variable(
+                                                            Ident(i#4, s#89..90),
+                                                        ),
+                                                    },
+                                                    Expr {
+                                                        kind: Literal(
+                                                            Integer,
+                                                            i#6,
+                                                        ),
+                                                    },
+                                                ),
+                                            },
+                                            conseq: Block {
+                                                stmts: [
+                                                    Stmt {
+                                                        kind: Let {
+                                                            name: Ident(i#9, s#100..104),
+                                                            value: Expr {
+                                                                kind: Binary(
+                                                                    Plus,
+                                                                    Expr {
+                                                                        kind: Variable(
+                                                                            Ident(i#5, s#108..109),
+                                                                        ),
+                                                                    },
+                                                                    Expr {
+                                                                        kind: Variable(
+                                                                            Ident(i#7, s#112..113),
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            },
+                                                            ty: Infer,
+                                                        },
+                                                    },
+                                                    Stmt {
+                                                        kind: Assign {
+                                                            target: Ident(i#5, s#117..118),
+                                                            value: Expr {
+                                                                kind: Variable(
+                                                                    Ident(i#7, s#121..122),
+                                                                ),
+                                                            },
+                                                        },
+                                                    },
+                                                    Stmt {
+                                                        kind: Assign {
+                                                            target: Ident(i#7, s#126..127),
+                                                            value: Expr {
+                                                                kind: Variable(
+                                                                    Ident(i#9, s#130..134),
+                                                                ),
+                                                            },
+                                                        },
+                                                    },
+                                                    Stmt {
+                                                        kind: Assign {
+                                                            target: Ident(i#4, s#139..140),
+                                                            value: Expr {
+                                                                kind: Binary(
+                                                                    Minus,
+                                                                    Expr {
+                                                                        kind: Variable(
+                                                                            Ident(i#4, s#143..144),
+                                                                        ),
+                                                                    },
+                                                                    Expr {
+                                                                        kind: Literal(
+                                                                            Integer,
+                                                                            i#10,
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            },
+                                                        },
+                                                    },
+                                                ],
+                                                ret_expr: None,
+                                            },
+                                            altern: Some(
+                                                Block {
+                                                    stmts: [],
+                                                    ret_expr: Some(
+                                                        Expr {
+                                                            kind: Break(
+                                                                None,
+                                                            ),
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    },
+                                ),
+                            },
+                        },
+                    },
+                ],
+                ret_expr: Some(
+                    Expr {
+                        kind: Variable(
+                            Ident(i#7, s#155..156),
+                        ),
+                    },
+                ),
+            },
+        },
+        Function {
+            ident: Ident(i#11, s#337..346),
+            decl: FnDecl {
+                inputs: [
+                    (
+                        Ident(i#4, s#347..348),
+                        Path(
+                            [
+                                Ident(i#2, s#350..354),
+                            ],
+                            [],
+                        ),
+                    ),
+                ],
+                output: Unit,
+            },
+            body: Block {
+                stmts: [],
+                ret_expr: Some(
+                    Expr {
+                        kind: If {
+                            cond: Expr {
+                                kind: Binary(
+                                    EqEq,
+                                    Expr {
+                                        kind: Variable(
+                                            Ident(i#4, s#362..363),
+                                        ),
+                                    },
+                                    Expr {
+                                        kind: Literal(
+                                            Integer,
+                                            i#6,
+                                        ),
+                                    },
+                                ),
+                            },
+                            conseq: Block {
+                                stmts: [
+                                    Stmt {
+                                        kind: Expr(
+                                            Expr {
+                                                kind: FnCall {
+                                                    expr: Expr {
+                                                        kind: Variable(
+                                                            Ident(i#0, s#373..381),
+                                                        ),
+                                                    },
+                                                    args: [
+                                                        Expr {
+                                                            kind: FnCall {
+                                                                expr: Expr {
+                                                                    kind: Variable(
+                                                                        Ident(i#12, s#382..394),
+                                                                    ),
+                                                                },
+                                                                args: [
+                                                                    Expr {
+                                                                        kind: Literal(
+                                                                            Integer,
+                                                                            i#6,
+                                                                        ),
+                                                                    },
+                                                                ],
+                                                            },
+                                                        },
+                                                    ],
+                                                },
+                                            },
+                                        ),
+                                    },
+                                ],
+                                ret_expr: None,
+                            },
+                            altern: Some(
+                                Block {
+                                    stmts: [
+                                        Stmt {
+                                            kind: Loop {
+                                                block: Block {
+                                                    stmts: [],
+                                                    ret_expr: Some(
+                                                        Expr {
+                                                            kind: If {
+                                                                cond: Expr {
+                                                                    kind: Binary(
+                                                                        Ne,
+                                                                        Expr {
+                                                                            kind: Variable(
+                                                                                Ident(i#4, s#418..419),
+                                                                            ),
+                                                                        },
+                                                                        Expr {
+                                                                            kind: Literal(
+                                                                                Integer,
+                                                                                i#6,
+                                                                            ),
+                                                                        },
+                                                                    ),
+                                                                },
+                                                                conseq: Block {
+                                                                    stmts: [
+                                                                        Stmt {
+                                                                            kind: Let {
+                                                                                name: Ident(i#13, s#430..434),
+                                                                                value: Expr {
+                                                                                    kind: Binary(
+                                                                                        Mod,
+                                                                                        Expr {
+                                                                                            kind: Variable(
+                                                                                                Ident(i#4, s#438..439),
+                                                                                            ),
+                                                                                        },
+                                                                                        Expr {
+                                                                                            kind: Literal(
+                                                                                                Integer,
+                                                                                                i#14,
+                                                                                            ),
+                                                                                        },
+                                                                                    ),
+                                                                                },
+                                                                                ty: Infer,
+                                                                            },
+                                                                        },
+                                                                        Stmt {
+                                                                            kind: Assign {
+                                                                                target: Ident(i#4, s#449..450),
+                                                                                value: Expr {
+                                                                                    kind: Binary(
+                                                                                        Div,
+                                                                                        Expr {
+                                                                                            kind: Variable(
+                                                                                                Ident(i#4, s#453..454),
+                                                                                            ),
+                                                                                        },
+                                                                                        Expr {
+                                                                                            kind: Literal(
+                                                                                                Integer,
+                                                                                                i#14,
+                                                                                            ),
+                                                                                        },
+                                                                                    ),
+                                                                                },
+                                                                            },
+                                                                        },
+                                                                        Stmt {
+                                                                            kind: Expr(
+                                                                                Expr {
+                                                                                    kind: FnCall {
+                                                                                        expr: Expr {
+                                                                                            kind: Variable(
+                                                                                                Ident(i#0, s#464..472),
+                                                                                            ),
+                                                                                        },
+                                                                                        args: [
+                                                                                            Expr {
+                                                                                                kind: FnCall {
+                                                                                                    expr: Expr {
+                                                                                                        kind: Variable(
+                                                                                                            Ident(i#12, s#473..485),
+                                                                                                        ),
+                                                                                                    },
+                                                                                                    args: [
+                                                                                                        Expr {
+                                                                                                            kind: Variable(
+                                                                                                                Ident(i#13, s#486..490),
+                                                                                                            ),
+                                                                                                        },
+                                                                                                    ],
+                                                                                                },
+                                                                                            },
+                                                                                        ],
+                                                                                    },
+                                                                                },
+                                                                            ),
+                                                                        },
+                                                                    ],
+                                                                    ret_expr: None,
+                                                                },
+                                                                altern: Some(
+                                                                    Block {
+                                                                        stmts: [],
+                                                                        ret_expr: Some(
+                                                                            Expr {
+                                                                                kind: Break(
+                                                                                    None,
+                                                                                ),
+                                                                            },
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            },
+                                                        },
+                                                    ),
+                                                },
+                                            },
+                                        },
+                                    ],
+                                    ret_expr: None,
+                                },
+                            ),
+                        },
+                    },
+                ),
+            },
+        },
+        Function {
+            ident: Ident(i#15, s#507..511),
+            decl: FnDecl {
+                inputs: [],
+                output: Unit,
+            },
+            body: Block {
+                stmts: [
+                    Stmt {
+                        kind: Let {
+                            name: Ident(i#4, s#517..518),
+                            value: Expr {
+                                kind: Literal(
+                                    Integer,
+                                    i#16,
+                                ),
+                            },
+                            ty: Infer,
+                        },
+                    },
+                    Stmt {
+                        kind: Loop {
+                            block: Block {
+                                stmts: [],
+                                ret_expr: Some(
+                                    Expr {
+                                        kind: If {
+                                            cond: Expr {
+                                                kind: Binary(
+                                                    Ne,
+                                                    Expr {
+                                                        kind: Variable(
+                                                            Ident(i#4, s#532..533),
+                                                        ),
+                                                    },
+                                                    Expr {
+                                                        kind: Literal(
+                                                            Integer,
+                                                            i#6,
+                                                        ),
+                                                    },
+                                                ),
+                                            },
+                                            conseq: Block {
+                                                stmts: [
+                                                    Stmt {
+                                                        kind: Let {
+                                                            name: Ident(i#17, s#543..546),
+                                                            value: Expr {
+                                                                kind: FnCall {
+                                                                    expr: Expr {
+                                                                        kind: Variable(
+                                                                            Ident(i#3, s#550..554),
+                                                                        ),
+                                                                    },
+                                                                    args: [
+                                                                        Expr {
+                                                                            kind: Literal(
+                                                                                Integer,
+                                                                                i#16,
+                                                                            ),
+                                                                        },
+                                                                    ],
+                                                                },
+                                                            },
+                                                            ty: Infer,
+                                                        },
+                                                    },
+                                                    Stmt {
+                                                        kind: Expr(
+                                                            Expr {
+                                                                kind: FnCall {
+                                                                    expr: Expr {
+                                                                        kind: Variable(
+                                                                            Ident(i#11, s#561..570),
+                                                                        ),
+                                                                    },
+                                                                    args: [
+                                                                        Expr {
+                                                                            kind: Variable(
+                                                                                Ident(i#17, s#571..574),
+                                                                            ),
+                                                                        },
+                                                                    ],
+                                                                },
+                                                            },
+                                                        ),
+                                                    },
+                                                    Stmt {
+                                                        kind: Assign {
+                                                            target: Ident(i#4, s#582..583),
+                                                            value: Expr {
+                                                                kind: Binary(
+                                                                    Minus,
+                                                                    Expr {
+                                                                        kind: Variable(
+                                                                            Ident(i#4, s#586..587),
+                                                                        ),
+                                                                    },
+                                                                    Expr {
+                                                                        kind: Literal(
+                                                                            Integer,
+                                                                            i#10,
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            },
+                                                        },
+                                                    },
+                                                ],
+                                                ret_expr: None,
+                                            },
+                                            altern: Some(
+                                                Block {
+                                                    stmts: [],
+                                                    ret_expr: Some(
+                                                        Expr {
+                                                            kind: Break(
+                                                                None,
+                                                            ),
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    },
+                                ),
+                            },
+                        },
+                    },
+                ],
+                ret_expr: None,
+            },
+        },
+    ],
+}

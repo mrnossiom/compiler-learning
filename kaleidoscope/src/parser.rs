@@ -1,76 +1,109 @@
 //! Tokens to AST parsing logic
 
-use std::borrow::Cow;
+use std::{borrow::Cow, mem};
 
 #[allow(clippy::enum_glob_use)]
-use crate::lexer::{Delimiter::*, Keyword::*, Literal::*, TokenKind::*};
+use crate::lexer::{Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*};
 use crate::{
-	ast::{Block, ExprKind, FnDecl, ItemKind, StmtKind, TyKind},
-	lexer::{Delimiter, Ident, Lexer, TokenKind},
+	ast::{Block, ExprKind, FnDecl, Ident, ItemKind, StmtKind, TyKind},
+	front::FrontCtx,
+	lexer::{Delimiter, Lexer, Token, TokenKind},
 };
 
 pub type PResult<T> = Result<T, Cow<'static, str>>;
 
-pub struct Parser<'a> {
-	lexer: Lexer<'a>,
+pub struct Parser<'fcx> {
+	fcx: &'fcx FrontCtx,
+
+	lexer: Lexer<'fcx, 'fcx>,
+
+	token: Token,
+	last_token: Token,
 }
 
-impl<'a> Parser<'a> {
-	pub fn new(content: &'a str) -> Self {
-		let lexer = Lexer::new(content);
-		Self { lexer }
+impl<'fcx> Parser<'fcx> {
+	pub fn new(fcx: &'fcx FrontCtx, content: &'fcx str) -> Self {
+		let mut parser = Self {
+			fcx,
+
+			lexer: Lexer::new(fcx, content),
+
+			token: Token::DUMMY,
+			last_token: Token::DUMMY,
+		};
+
+		// init the first token
+		parser.bump();
+
+		parser
 	}
 }
 
 /// Helper methods
 impl Parser<'_> {
-	fn eat(&mut self, token: &TokenKind) -> Option<TokenKind> {
-		if &self.lexer.peek() == token {
-			Some(self.lexer.next())
+	fn bump(&mut self) -> Token {
+		self.last_token = mem::replace(&mut self.token, self.lexer.next().unwrap_or(Token::DUMMY));
+		self.token
+	}
+
+	fn check(&self, token: TokenKind) -> bool {
+		self.token.kind == token
+	}
+
+	fn eat(&mut self, token: TokenKind) -> bool {
+		if self.check(token) {
+			self.bump();
+			true
 		} else {
-			None
+			false
 		}
 	}
 
-	fn expect(&mut self, token: &TokenKind) -> PResult<TokenKind> {
-		self.eat(token)
-			.ok_or_else(|| format!("expected {token:?}, got {:?}", self.lexer.peek()).into())
-	}
-
-	fn check(&mut self, token: &TokenKind) -> bool {
-		&self.lexer.peek() == token
+	#[track_caller]
+	fn expect(&mut self, token: TokenKind) -> PResult<Token> {
+		if self.check(token) {
+			self.bump();
+			Ok(self.token)
+		} else {
+			panic!();
+			Err(format!("expected kind {token:?}, got {:?}", self.token).into())
+		}
 	}
 
 	fn eat_ident(&mut self) -> Option<Ident> {
-		match self.lexer.next() {
-			TokenKind::Ident(ident) => Some(ident),
-			_ => None,
-		}
+		self.token.as_ident().inspect(|_| {
+			self.bump();
+		})
 	}
 
 	fn expect_ident(&mut self) -> PResult<Ident> {
 		self.eat_ident()
-			.ok_or_else(|| format!("expected an ident, got {:?}", self.lexer.peek()).into())
+			.ok_or_else(|| format!("expected an ident, got {:?}", self.token).into())
 	}
 
 	fn parse_seq<T>(
 		&mut self,
 		delim: Delimiter,
-		separator: &TokenKind,
+		separator: TokenKind,
 		mut p_elem: impl FnMut(&mut Self) -> PResult<T>,
 	) -> PResult<Vec<T>> {
 		let mut finished = false;
 
 		let mut seq = Vec::new();
 
-		self.expect(&Open(delim))?;
-		while self.eat(&Close(delim)).is_none() && !finished {
+		self.expect(Open(delim))?;
+		while !self.eat(Close(delim)) && !finished {
 			seq.push(p_elem(self)?);
 
 			// no comma means no item left
-			finished = self.eat(separator).is_none();
+			finished = !self.eat(separator);
 		}
 		Ok(seq)
+	}
+
+	/// Looks one token ahead
+	fn look_ahead(&self) -> TokenKind {
+		self.lexer.clone().next().map_or(Eof, |tkn| tkn.kind)
 	}
 }
 
@@ -82,10 +115,10 @@ impl Parser<'_> {
 	}
 
 	fn parse_binop_rhs(&mut self, precedence: u32, mut lhs: ExprKind) -> PResult<ExprKind> {
-		while let BinOp(binop) = self.lexer.peek()
+		while let BinOp(binop) = self.token.kind
 			&& binop.precedence() >= precedence
 		{
-			self.lexer.bump();
+			self.bump();
 			let rhs = self.parse_expr()?;
 			lhs = ExprKind::Binary {
 				op: binop,
@@ -97,20 +130,23 @@ impl Parser<'_> {
 	}
 
 	fn parse_expr_(&mut self) -> PResult<ExprKind> {
-		let mut expr = match self.lexer.peek() {
+		let mut expr = match self.token.kind {
 			// prefix
 			Not => self.parse_not_expr()?,
 
 			Open(Paren) => self.parse_paren_expr()?,
 			TokenKind::Ident(_) => self.parse_identifier_expr()?,
-			Literal(Integer(_)) => self.parse_num_literal_expr()?,
+			Literal(Integer, symbol) => {
+				self.bump();
+				ExprKind::Literal(Integer, symbol)
+			}
 			Keyword(If) => self.parse_if_expr()?,
 			// Some(Keyword(While)) => self.parse_while_stmt()?,
 			ukn => todo!("{ukn:?}"),
 		};
 
 		// check for postfix things like `f()`
-		expr = match self.lexer.peek() {
+		expr = match self.token.kind {
 			Open(Paren) => self.parse_fn_call(expr)?,
 			_ => expr,
 		};
@@ -119,15 +155,15 @@ impl Parser<'_> {
 	}
 
 	fn parse_not_expr(&mut self) -> PResult<ExprKind> {
-		self.expect(&Not)?;
+		self.expect(Not)?;
 		let expr = self.parse_expr()?;
 		Ok(expr)
 	}
 
 	fn parse_paren_expr(&mut self) -> PResult<ExprKind> {
-		self.expect(&Open(Paren))?;
+		self.expect(Open(Paren))?;
 		let expr = self.parse_expr()?;
-		self.expect(&Close(Paren))?;
+		self.expect(Close(Paren))?;
 		Ok(expr)
 	}
 
@@ -136,18 +172,11 @@ impl Parser<'_> {
 		Ok(ExprKind::Variable(ident))
 	}
 
-	fn parse_num_literal_expr(&mut self) -> PResult<ExprKind> {
-		match self.lexer.next() {
-			Literal(value) => Ok(ExprKind::Literal(value)),
-			_ => Err("expected a literal".into()),
-		}
-	}
-
 	fn parse_if_expr(&mut self) -> PResult<ExprKind> {
-		self.expect(&Keyword(If))?;
+		self.expect(Keyword(If))?;
 		let cond = self.parse_expr()?;
 		let conseq = self.parse_block()?;
-		let altern = if self.eat(&Keyword(Else)).is_some() {
+		let altern = if self.eat(Keyword(Else)) {
 			Some(self.parse_block()?)
 		} else {
 			None
@@ -165,14 +194,14 @@ impl Parser<'_> {
 impl Parser<'_> {
 	pub fn parse_file(&mut self) -> PResult<Vec<ItemKind>> {
 		let mut items = Vec::new();
-		while self.lexer.peek() != Eof {
+		while self.token.kind != Eof {
 			items.push(self.parse_item()?);
 		}
 		Ok(items)
 	}
 
 	fn parse_item(&mut self) -> PResult<ItemKind> {
-		let item = match self.lexer.peek() {
+		let item = match self.token.kind {
 			Keyword(Fn) => self.parse_fn()?,
 			Keyword(Extern) => self.parse_extern_fn()?,
 			Eof => return Err("no expression entered".into()),
@@ -182,24 +211,24 @@ impl Parser<'_> {
 	}
 
 	fn parse_fn(&mut self) -> PResult<ItemKind> {
-		self.expect(&Keyword(Fn))?;
+		self.expect(Keyword(Fn))?;
 		let (ident, decl) = self.parse_fn_decl()?;
 		let body = Box::new(self.parse_block()?);
 		Ok(ItemKind::Function { ident, decl, body })
 	}
 
 	fn parse_extern_fn(&mut self) -> PResult<ItemKind> {
-		self.expect(&Keyword(Extern))?;
-		self.expect(&Keyword(Fn))?;
+		self.expect(Keyword(Extern))?;
+		self.expect(Keyword(Fn))?;
 		let (ident, decl) = self.parse_fn_decl()?;
-		self.expect(&Semi)?;
+		self.expect(Semi)?;
 		Ok(ItemKind::Extern { ident, decl })
 	}
 
 	fn parse_fn_decl(&mut self) -> PResult<(Ident, FnDecl)> {
 		let name = self.expect_ident()?;
-		let args = self.parse_seq(Paren, &Comma, Parser::parse_argument)?;
-		let ty = if !self.check(&Open(Brace)) && !self.check(&Semi) {
+		let args = self.parse_seq(Paren, Comma, Parser::parse_argument)?;
+		let ty = if !self.check(Open(Brace)) && !self.check(Semi) {
 			self.parse_ty()?
 		} else {
 			TyKind::Unit
@@ -209,13 +238,13 @@ impl Parser<'_> {
 
 	fn parse_argument(&mut self) -> PResult<(Ident, TyKind)> {
 		let name = self.expect_ident()?;
-		self.expect(&Colon)?;
+		self.expect(Colon)?;
 		let ty = self.parse_ty()?;
 		Ok((name, ty))
 	}
 
 	fn parse_fn_call(&mut self, expr: ExprKind) -> PResult<ExprKind> {
-		let args = self.parse_seq(Paren, &Comma, Parser::parse_expr)?;
+		let args = self.parse_seq(Paren, Comma, Parser::parse_expr)?;
 		Ok(ExprKind::FnCall {
 			expr: Box::new(expr),
 			args,
@@ -226,26 +255,27 @@ impl Parser<'_> {
 /// Types
 impl Parser<'_> {
 	fn parse_ty(&mut self) -> PResult<TyKind> {
-		Ok(TyKind::Path(self.expect_ident()?))
+		// TODO
+		Ok(TyKind::Path(vec![self.expect_ident()?], vec![]))
 	}
 }
 
 /// Statements
 impl Parser<'_> {
 	fn parse_stmt(&mut self) -> PResult<StmtKind> {
-		let stmt = match self.lexer.peek() {
+		let stmt = match self.token.kind {
 			Keyword(Loop) => self.parse_loop_stmt()?,
 			Keyword(While) => self.parse_while_stmt()?,
 			Keyword(For) => self.parse_for_stmt()?,
 			Semi => StmtKind::Empty,
 
-			TokenKind::Ident(_) if self.lexer.look_ahead(1) == Colon => self.parse_let_stmt()?,
-			TokenKind::Ident(_) if self.lexer.look_ahead(1) == Eq => self.parse_assign_stmt()?,
+			TokenKind::Ident(_) if self.look_ahead() == Colon => self.parse_let_stmt()?,
+			TokenKind::Ident(_) if self.look_ahead() == Eq => self.parse_assign_stmt()?,
 
 			Eof => return Err("expected more input".into()),
 			_ => {
 				let expr = Box::new(self.parse_expr()?);
-				if self.eat(&Semi).is_some() {
+				if self.eat(Semi) {
 					StmtKind::Expr(expr)
 				} else {
 					StmtKind::ExprRet(expr)
@@ -256,22 +286,22 @@ impl Parser<'_> {
 	}
 
 	fn parse_loop_stmt(&mut self) -> PResult<StmtKind> {
-		self.expect(&Keyword(Loop))?;
+		self.expect(Keyword(Loop))?;
 		let body = Box::new(self.parse_block()?);
 		Ok(StmtKind::Loop { body })
 	}
 
 	fn parse_while_stmt(&mut self) -> PResult<StmtKind> {
-		self.expect(&Keyword(While))?;
+		self.expect(Keyword(While))?;
 		let check = Box::new(self.parse_expr()?);
 		let body = Box::new(self.parse_block()?);
 		Ok(StmtKind::WhileLoop { check, body })
 	}
 
 	fn parse_for_stmt(&mut self) -> PResult<StmtKind> {
-		self.expect(&Keyword(For))?;
+		self.expect(Keyword(For))?;
 		let pat = self.expect_ident()?;
-		self.expect(&Keyword(In))?;
+		self.expect(Keyword(In))?;
 		let iter = Box::new(self.parse_expr()?);
 		let body = Box::new(self.parse_block()?);
 		Ok(StmtKind::ForLoop { pat, iter, body })
@@ -279,18 +309,19 @@ impl Parser<'_> {
 
 	fn parse_let_stmt(&mut self) -> PResult<StmtKind> {
 		let ident = self.expect_ident()?;
-		self.expect(&Colon)?;
+		self.expect(Colon)?;
 
 		// definition with optional ty
-		let ty = if self.check(&Eq) {
+		// if the equal sign is right after, there is no type
+		let ty = if self.check(Eq) {
 			TyKind::Infer
 		} else {
 			self.parse_ty()?
 		};
-		self.expect(&Eq)?;
+		self.expect(Eq)?;
 
 		let value = Box::new(self.parse_expr()?);
-		self.expect(&Semi)?;
+		self.expect(Semi)?;
 
 		Ok(StmtKind::Let {
 			name: ident,
@@ -301,21 +332,25 @@ impl Parser<'_> {
 
 	fn parse_assign_stmt(&mut self) -> PResult<StmtKind> {
 		let ident = self.expect_ident()?;
-		self.expect(&Eq)?;
+		self.expect(Eq)?;
 
 		let value = Box::new(self.parse_expr()?);
-		self.expect(&Semi)?;
+		self.expect(Semi)?;
 		Ok(StmtKind::Assign {
 			target: ident,
 			value,
 		})
 	}
 	fn parse_block(&mut self) -> PResult<Block> {
-		self.expect(&Open(Brace))?;
+		let lo = self.token.span;
+		self.expect(Open(Brace))?;
 		let mut stmts = Vec::new();
-		while self.eat(&Close(Brace)).is_none() {
+		while !self.eat(Close(Brace)) {
 			stmts.push(self.parse_stmt()?);
 		}
-		Ok(Block { stmts })
+		Ok(Block {
+			stmts,
+			span: lo.to(self.last_token.span),
+		})
 	}
 }

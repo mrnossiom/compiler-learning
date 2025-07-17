@@ -1,23 +1,89 @@
 //! Source code to tokens lexing logic
-use std::{collections::VecDeque, iter::Peekable, str::Chars};
+
+use core::fmt;
+use std::{cmp, str::Chars};
+
+use crate::ast::Ident;
+use crate::front::{FrontCtx, Symbol};
 
 #[allow(clippy::enum_glob_use)]
-use self::{BinOp::*, Delimiter::*, Keyword::*, Literal::*, TokenKind::*};
+use self::{BinOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Ident(String);
+#[derive(Debug, PartialEq, Eq)]
+pub enum Spacing {
+	Alone,
+	Joint,
+}
 
-impl AsRef<str> for Ident {
-	fn as_ref(&self) -> &str {
-		&self.0
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Span {
+	pub start: u32,
+	pub end: u32,
+}
+
+impl Span {
+	const DUMMY: Self = Self::new(u32::MAX, u32::MAX);
+
+	pub const fn new(start: u32, end: u32) -> Self {
+		Self { start, end }
+	}
+
+	#[must_use]
+	pub fn to(self, span: Self) -> Self {
+		Self {
+			start: cmp::min(self.start, span.start),
+			end: cmp::max(self.end, span.end),
+		}
 	}
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl fmt::Debug for Span {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "s#{}..{}", self.start, self.end)
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Token {
+	pub kind: TokenKind,
+	pub span: Span,
+}
+
+impl Token {
+	pub const DUMMY: Self = Self::new(Eof, Span::DUMMY);
+
+	pub const fn new(kind: TokenKind, span: Span) -> Self {
+		Self { kind, span }
+	}
+
+	fn maybe_glue_joint(&self, next: &Self) -> Option<Self> {
+		let glued_kind = match (self.kind, next.kind) {
+			(Eq, Eq) => BinOp(EqEq),
+			(BinOp(Gt), Eq) => BinOp(Ge),
+			(BinOp(Lt), Eq) => BinOp(Le),
+
+			(BinOp(Minus), BinOp(Lt)) => Arrow,
+			(Not, Eq) => BinOp(Ne),
+
+			(_, _) => return None,
+		};
+
+		Some(Self::new(glued_kind, self.span.to(next.span)))
+	}
+
+	pub const fn as_ident(self) -> Option<Ident> {
+		match self.kind {
+			Ident(sym) => Some(Ident::new(sym, self.span)),
+			_ => None,
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
-	Ident(Ident),
+	Ident(Symbol),
 	Keyword(Keyword),
-	Literal(Literal),
+	Literal(LiteralKind, Symbol),
 
 	BinOp(BinOp),
 
@@ -43,14 +109,14 @@ pub enum TokenKind {
 	Eof,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Literal {
-	Integer(String),
-	Float(String),
-	Str(String),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiteralKind {
+	Integer,
+	Float,
+	Str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
 	Fn,
 	Extern,
@@ -70,6 +136,7 @@ pub enum Delimiter {
 	Paren,
 	Bracket,
 	Brace,
+	// Lexemes are `Lt` and `Gt`
 	Angled,
 }
 
@@ -99,41 +166,83 @@ pub enum BinOp {
 impl BinOp {
 	pub const fn precedence(self) -> u32 {
 		match self {
-			Self::Mul | Self::Div | Self::Mod => 40,
-			Self::Minus | Self::Plus => 30,
-			Self::Gt | Self::Ge | Self::Lt | Self::Le => 20,
-			Self::Ne | Self::EqEq => 10,
+			Self::Mul | Self::Div | Self::Mod => 4,
+			Self::Minus | Self::Plus => 3,
+			Self::Gt | Self::Ge | Self::Lt | Self::Le => 2,
+			Self::Ne | Self::EqEq => 1,
 		}
 	}
 }
 
-struct SimpleLexer<'a> {
-	chars: Peekable<Chars<'a>>,
+const EOF_CHAR: char = '\0';
+
+#[derive(Debug, Clone)]
+pub struct Lexer<'fcx, 'src> {
+	fcx: &'fcx FrontCtx,
+
+	source: &'src str,
+	chars: Chars<'src>,
+	token: Option<char>,
+	offset: usize,
+
+	next_glued: Option<Token>,
 }
 
-const fn is_ident_start(c: char) -> bool {
-	c.is_ascii_alphabetic() || c == '_'
+impl<'fcx, 'src> Lexer<'fcx, 'src> {
+	pub fn new(fcx: &'fcx FrontCtx, source: &'src str) -> Self {
+		let chars = source.chars();
+		Self {
+			fcx,
+			source,
+			chars,
+			token: None,
+			offset: 0,
+
+			next_glued: None,
+		}
+	}
+
+	fn bump(&mut self) -> Option<char> {
+		self.token = self.chars.next();
+		self.offset += self.token.map_or(0, char::len_utf8);
+		self.token
+	}
+
+	fn first(&self) -> char {
+		// TODO: is the clone cheap? or should we have extra logic like peekable
+		self.chars.clone().next().unwrap_or(EOF_CHAR)
+	}
+
+	fn bump_while(&mut self, mut cond: impl FnMut(char) -> bool) {
+		while cond(self.first()) && !self.is_eof() {
+			self.bump();
+		}
+	}
+
+	fn str_from_to(&self, start: usize, end: usize) -> &str {
+		&self.source[start..end]
+	}
+
+	fn str_from(&self, start: usize) -> &str {
+		&self.source[start..self.offset]
+	}
+
+	fn is_eof(&self) -> bool {
+		self.chars.as_str().is_empty()
+	}
 }
 
-const fn is_ident_continue(c: char) -> bool {
-	c.is_ascii_alphanumeric() || c == '_'
-}
-
-impl SimpleLexer<'_> {
-	pub fn next_simple_token(&mut self) -> Option<(bool, TokenKind)> {
-		let mut trailing_whitespace = false;
+impl Lexer<'_, '_> {
+	pub fn next_token(&mut self) -> Option<(Token, Spacing)> {
+		let mut spacing = Spacing::Joint;
 
 		loop {
-			let chr = self.chars.next()?;
+			let start = self.offset;
 
-			let token = match chr {
+			let kind = match self.bump()? {
 				c if is_ident_start(c) => {
-					let mut ident = c.to_string();
-					while let Some(c) = self.chars.next_if(|c| is_ident_continue(*c)) {
-						ident.push(c);
-					}
-
-					match ident.as_str() {
+					self.bump_while(is_ident_continue);
+					match self.str_from(start) {
 						"fn" => Keyword(Fn),
 						"extern" => Keyword(Extern),
 						"const" => Keyword(Const),
@@ -146,40 +255,43 @@ impl SimpleLexer<'_> {
 						"for" => Keyword(For),
 						"in" => Keyword(In),
 
-						_ => TokenKind::Ident(Ident(ident)),
+						ident => TokenKind::Ident(self.fcx.symbols.intern(ident)),
 					}
 				}
 
 				// Int or Float
 				c if c.is_ascii_digit() => {
-					let mut num = c.to_string();
-					while let Some(c) = self.chars.next_if(char::is_ascii_digit) {
-						num.push(c);
-					}
-
-					if self.chars.next_if_eq(&'.').is_some() {
-						num.push('.');
-						while let Some(c) = self.chars.next_if(char::is_ascii_digit) {
-							num.push(c);
-						}
-						Literal(Float(num))
+					self.bump_while(|c| char::is_ascii_digit(&c));
+					let kind = if self.first() == '.' {
+						self.bump();
+						self.bump_while(|c| char::is_ascii_digit(&c));
+						Float
 					} else {
-						Literal(Integer(num))
-					}
+						Integer
+					};
+					Literal(kind, self.fcx.symbols.intern(self.str_from(start)))
 				}
 
-				c @ '"' => {
-					let mut content = c.to_string();
-					// TODO: handle backslashes
-					while let Some(c) = self.chars.next_if_eq(&'"') {
-						content.push(c);
+				'"' => {
+					while let Some(c) = self.bump() {
+						match c {
+							'\\' if self.first() == '\\' || self.first() == '"' => {
+								// skip escaped character
+								self.bump();
+							}
+							'"' => break,
+							_ => {}
+						}
 					}
-					Literal(Str(content))
+
+					// strip quotes
+					let symbol = self.str_from_to(start + 1, self.offset - 1);
+					Literal(Str, self.fcx.symbols.intern(symbol))
 				}
 
 				// Non-significative whitespace
 				c if c.is_ascii_whitespace() => {
-					trailing_whitespace = true;
+					spacing = Spacing::Joint;
 					continue;
 				}
 
@@ -194,18 +306,18 @@ impl SimpleLexer<'_> {
 				'+' => BinOp(Plus),
 				'-' => BinOp(Minus),
 				'*' => BinOp(Mul),
-				'/' => match self.chars.peek() {
-					Some('/') => {
+				'/' => match self.first() {
+					'/' => {
 						// eat the whole line
-						while self.chars.next_if(|c| *c != '\n').is_some() {}
-						trailing_whitespace = true;
+						self.bump_while(|c| c != '\n');
+						spacing = Spacing::Joint;
 						continue;
 					}
-					Some('*') => {
+					'*' => {
 						// eat the star
-						_ = self.chars.next();
+						self.bump();
 						self.skip_block_comment();
-						trailing_whitespace = true;
+						spacing = Spacing::Joint;
 						continue;
 					}
 					_ => BinOp(Div),
@@ -226,7 +338,36 @@ impl SimpleLexer<'_> {
 				_ => Unknown,
 			};
 
-			return Some((trailing_whitespace, token));
+			let span = Span::new(
+				u32::try_from(start).unwrap(),
+				u32::try_from(self.offset).unwrap(),
+			);
+			let token = Token { kind, span };
+			return Some((token, spacing));
+		}
+	}
+
+	fn next_token_glued(&mut self) -> Option<Token> {
+		let mut token = self
+			.next_glued
+			.take()
+			.or_else(|| self.next_token().map(|(tkn, _spacing)| tkn))?;
+
+		loop {
+			// maybe glue joint token if applicable
+			if let Some((next, spacing)) = self.next_token() {
+				if spacing == Spacing::Joint
+					&& let Some(glued_token) = token.maybe_glue_joint(&next)
+				{
+					token = glued_token;
+				} else {
+					// save token for next iteration
+					self.next_glued = Some(next);
+					return Some(token);
+				}
+			} else {
+				return Some(token);
+			}
 		}
 	}
 
@@ -234,117 +375,32 @@ impl SimpleLexer<'_> {
 		let mut count = 0;
 
 		// handle nested block comments
-		while let (Some(c1), Some(c2)) = (self.chars.next(), self.chars.peek()) {
-			match (c1, c2) {
-				('/', '*') => count += 1,
-				('*', '/') if count == 0 => break,
-				('*', '/') => count -= 1,
-				(_, _) => {}
-			}
-		}
-
-		// eat the trailing slash
-		_ = self.chars.next();
-	}
-}
-
-impl Iterator for SimpleLexer<'_> {
-	type Item = (bool, TokenKind);
-	fn next(&mut self) -> Option<Self::Item> {
-		self.next_simple_token()
-	}
-}
-
-pub struct Lexer<'a> {
-	inner: Peekable<SimpleLexer<'a>>,
-
-	buffer: VecDeque<TokenKind>,
-}
-
-impl TokenKind {
-	const fn maybe_glue(&self, other: &Self) -> Option<Self> {
-		let glued = match (self, other) {
-			(Eq, Eq) => BinOp(EqEq),
-			(BinOp(Gt), Eq) => BinOp(Ge),
-			(BinOp(Lt), Eq) => BinOp(Le),
-
-			(BinOp(Minus), BinOp(Lt)) => Arrow,
-			(Not, Eq) => BinOp(Ne),
-
-			(_, _) => return None,
-		};
-		Some(glued)
-	}
-}
-
-impl Lexer<'_> {
-	fn next_token(&mut self) -> Option<TokenKind> {
-		let (_whitespace, mut token) = self.inner.next()?;
-
-		loop {
-			// try to glue stuff
-			if let Some((whitespace, next)) = self.inner.peek()
-				// without whitespace between them
-				&& !*whitespace
-				&& let Some(glued_token) = token.maybe_glue(next)
-			{
-				_ = self.inner.next();
-				token = glued_token;
-			} else {
-				return Some(token);
-			}
-		}
-	}
-}
-
-impl<'a> Lexer<'a> {
-	pub fn new(code: &'a str) -> Self {
-		let chars = code.chars().peekable();
-		let inner = SimpleLexer { chars }.peekable();
-		Self {
-			inner,
-			buffer: VecDeque::new(),
-		}
-	}
-
-	pub fn peek(&mut self) -> TokenKind {
-		if let Some(tkn) = self.buffer.front() {
-			tkn.clone()
-		} else if let Some(tkn) = self.next_token() {
-			self.buffer.push_back(tkn.clone());
-			tkn
-		} else {
-			Eof
-		}
-	}
-
-	pub fn look_ahead(&mut self, n: usize) -> TokenKind {
-		if self.buffer.len() <= n {
-			// load more tokens
-			for _ in self.buffer.len()..=n {
-				if let Some(tkn) = self.next_token() {
-					self.buffer.push_back(tkn);
-				} else {
+		while let Some(c) = self.bump() {
+			match c {
+				'/' if self.first() == '*' => count += 1,
+				'*' if self.first() == '/' && count == 0 => {
+					// eat the trailing slash
+					self.bump();
 					break;
 				}
+				'*' if self.first() == '/' => count -= 1,
+				_ => {}
 			}
-
-			self.buffer.back().cloned().unwrap_or(Eof)
-		} else if let Some(tkn) = self.buffer.get(n) {
-			tkn.clone()
-		} else {
-			Eof
 		}
 	}
+}
 
-	pub fn next(&mut self) -> TokenKind {
-		self.buffer
-			.pop_front()
-			.or_else(|| self.next_token())
-			.unwrap_or(Eof)
+impl Iterator for Lexer<'_, '_> {
+	type Item = Token;
+	fn next(&mut self) -> Option<Self::Item> {
+		self.next_token_glued()
 	}
+}
 
-	pub fn bump(&mut self) {
-		_ = self.next();
-	}
+const fn is_ident_start(c: char) -> bool {
+	c.is_ascii_alphabetic() || c == '_'
+}
+
+const fn is_ident_continue(c: char) -> bool {
+	c.is_ascii_alphanumeric() || c == '_'
 }

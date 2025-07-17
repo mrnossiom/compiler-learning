@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use kaleidoscope::{lowerer, parser, session, ty};
+use kaleidoscope::{
+	codegen::{self, CodeGen},
+	hir, lowerer, parser, session, ty,
+};
 
 #[derive(clap::Parser)]
 struct Args {
@@ -47,10 +50,23 @@ fn pipeline(args: &Args, source: &str) {
 	// codegen TBIR bodies
 	#[cfg(feature = "llvm")]
 	let context = Context::create();
-	// let mut generator = Generator::new(
-	// 	#[cfg(feature = "llvm")]
-	// 	&context,
-	// );
+	let mut generator = codegen::Generator::new(
+		&fcx,
+		#[cfg(feature = "llvm")]
+		&context,
+	);
+
+	for item in hir.items {
+		match item.kind {
+			hir::ItemKind::Extern { ident, decl } => {
+				generator.extern_(ident.name, decl).unwrap();
+			}
+			hir::ItemKind::Function { ident, decl, body } => {
+				let fn_ = generator.function(ident.name, decl, body).unwrap();
+				dbg!(generator.call_fn(fn_).unwrap());
+			}
+		}
+	}
 
 	println!("Reached pipeline end sucessfully!");
 }

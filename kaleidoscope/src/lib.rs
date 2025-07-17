@@ -3,7 +3,7 @@
 #[cfg(feature = "llvm")]
 use inkwell::context::Context;
 
-// pub mod codegen;
+pub mod codegen;
 pub mod lexer;
 pub mod lowerer;
 pub mod parser;
@@ -23,4 +23,4 @@ pub mod ffi;
 ))]
 compile_error!("You need to choose a single backend!");
 
-// type Result<T> = std::result::Result<T, &'static str>;
+type Result<T> = std::result::Result<T, &'static str>;

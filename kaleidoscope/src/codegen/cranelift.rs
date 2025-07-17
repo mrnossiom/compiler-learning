@@ -6,22 +6,23 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
 use crate::{
-	Ident, Result,
-	lexer::Operator,
-	parser::{Expr, Function, Prototype},
+	Result, ast,
+	codegen::CodeGen,
+	hir, lexer,
+	session::{SessionCtx, Symbol},
 };
 
-use super::CodeGen;
+pub struct Generator<'fcx> {
+	fcx: &'fcx SessionCtx,
 
-pub struct Generator {
 	builder_context: FunctionBuilderContext,
-	functions: HashMap<Ident, CompiledFunction>,
+	functions: HashMap<Symbol, CompiledFunction>,
 	module: JITModule,
 	variable_generator: VariableGenerator,
 }
 
-impl Generator {
-	pub fn new() -> Self {
+impl<'fcx> Generator<'fcx> {
+	pub fn new(fcx: &'fcx SessionCtx) -> Self {
 		let mut flag_builder = settings::builder();
 		flag_builder.set("opt_level", "speed_and_size").unwrap();
 		let isa = cranelift_native::builder()
@@ -31,6 +32,7 @@ impl Generator {
 		let builder = JITBuilder::with_isa(isa, default_libcall_names());
 
 		Self {
+			fcx,
 			builder_context: FunctionBuilderContext::new(),
 			functions: HashMap::new(),
 			module: JITModule::new(builder),
@@ -38,25 +40,43 @@ impl Generator {
 		}
 	}
 
-	pub fn prototype(&mut self, prototype: &Prototype, linkage: Linkage) -> Result<FuncId> {
-		match self.functions.get(&prototype.name) {
+	// TODO: use ty::TyKind when introducing tbir
+	fn to_abi_ty(&self, output: &ast::Ty) -> AbiParam {
+		match &output.kind {
+			ast::TyKind::Path(path, _generics) => panic!("{path:?}"),
+			ast::TyKind::Unit => AbiParam::new(types::Type::int(0).unwrap()),
+			ast::TyKind::Infer => panic!("all types are inferred at this point"),
+		}
+	}
+}
+
+impl Generator<'_> {
+	pub fn declare_func(
+		&mut self,
+		name: Symbol,
+		decl: &hir::FnDecl,
+		linkage: Linkage,
+	) -> Result<FuncId> {
+		match self.functions.get(&name) {
 			None => {
 				let mut signature = self.module.make_signature();
-				for _ in &prototype.args {
-					signature.params.push(AbiParam::new(types::I64));
+				for (_name, ty) in decl.inputs {
+					signature.params.push(self.to_abi_ty(ty));
 				}
-				signature.returns.push(AbiParam::new(types::I64));
+				signature.returns.push(self.to_abi_ty(decl.output));
 
+				let func_name = self.fcx.symbols.resolve(name);
 				let func_id = self
 					.module
-					.declare_function(&prototype.name.0, linkage, &signature)
+					.declare_function(&func_name, linkage, &signature)
 					.unwrap();
+
 				self.functions.insert(
-					prototype.name.clone(),
+					name,
 					CompiledFunction {
 						defined: false,
 						id: func_id,
-						param_count: prototype.args.len(),
+						param_count: decl.inputs.len(),
 					},
 				);
 				Ok(func_id)
@@ -66,24 +86,29 @@ impl Generator {
 	}
 }
 
-impl CodeGen for Generator {
+impl CodeGen for Generator<'_> {
 	type Fn = fn() -> i64;
 
-	fn extern_(&mut self, prototype: &Prototype) -> Result<()> {
-		self.prototype(prototype, Linkage::Import)?;
+	fn extern_(&mut self, name: Symbol, decl: &hir::FnDecl) -> Result<()> {
+		self.declare_func(name, decl, Linkage::Import)?;
 		Ok(())
 	}
 
-	fn function(&mut self, function: &Function) -> Result<Self::Fn> {
+	fn function(
+		&mut self,
+		name: Symbol,
+		decl: &hir::FnDecl,
+		body: &hir::Block,
+	) -> Result<Self::Fn> {
 		let mut context = self.module.make_context();
 
 		let signature = &mut context.func.signature;
-		for _ in &function.proto.args {
-			signature.params.push(AbiParam::new(types::I64));
+		for (_name, ty) in decl.inputs {
+			signature.params.push(self.to_abi_ty(ty));
 		}
-		signature.returns.push(AbiParam::new(types::I64));
+		signature.returns.push(self.to_abi_ty(decl.output));
 
-		let func_id = self.prototype(&function.proto, Linkage::Export)?;
+		let func_id = self.declare_func(name, decl, Linkage::Export)?;
 
 		let mut builder = FunctionBuilder::new(&mut context.func, &mut self.builder_context);
 
@@ -93,17 +118,18 @@ impl CodeGen for Generator {
 		builder.seal_block(entry_block);
 
 		let mut values = HashMap::new();
-		for (i, argument) in function.proto.args.iter().enumerate() {
+		for (i, (argument, ty)) in decl.inputs.iter().enumerate() {
 			let value = builder.block_params(entry_block)[i];
 			let variable = self.variable_generator.create_var(&mut builder, value);
-			values.insert(argument.clone(), variable);
+			values.insert(argument.name, variable);
 		}
 
-		if let Some(ref mut func) = self.functions.get_mut(&function.proto.name) {
+		if let Some(ref mut func) = self.functions.get_mut(&name) {
 			func.defined = true;
 		}
 
 		let mut generator = FunctionGenerator {
+			fcx: self.fcx,
 			builder,
 			functions: &self.functions,
 			module: &mut self.module,
@@ -111,10 +137,10 @@ impl CodeGen for Generator {
 			variable_generator: &mut self.variable_generator,
 		};
 
-		let return_value = match generator.expr(&function.body) {
+		let return_value = match generator.codegen_block(body) {
 			Ok(ret) => ret,
 			Err(err) => {
-				self.functions.remove(&function.proto.name);
+				self.functions.remove(&name);
 				return Err(err);
 			}
 		};
@@ -131,10 +157,6 @@ impl CodeGen for Generator {
 		self.module.define_function(func_id, &mut context).unwrap();
 		self.module.clear_context(&mut context);
 		self.module.finalize_definitions().unwrap();
-
-		if function.proto.name.0.starts_with("__anon") {
-			self.functions.remove(&function.proto.name);
-		}
 
 		let fn_ = self.module.get_finalized_function(func_id);
 
@@ -171,138 +193,181 @@ struct CompiledFunction {
 	param_count: usize,
 }
 
-pub struct FunctionGenerator<'a> {
-	builder: FunctionBuilder<'a>,
-	functions: &'a HashMap<Ident, CompiledFunction>,
-	module: &'a mut JITModule,
-	values: HashMap<Ident, Variable>,
-	variable_generator: &'a mut VariableGenerator,
+pub struct FunctionGenerator<'fcx, 'bld> {
+	fcx: &'fcx SessionCtx,
+
+	builder: FunctionBuilder<'bld>,
+	functions: &'bld HashMap<Symbol, CompiledFunction>,
+	module: &'bld mut JITModule,
+	values: HashMap<Symbol, Variable>,
+	variable_generator: &'bld mut VariableGenerator,
 }
 
-impl FunctionGenerator<'_> {
-	fn expr(&mut self, expr: &Expr) -> Result<Value> {
-		let value = match expr {
-			Expr::Literal(num) => self.builder.ins().iconst(types::I64, num.value),
-			Expr::Ident(ident) => match self.values.get(ident) {
+impl FunctionGenerator<'_, '_> {
+	fn codegen_block(&mut self, block: &hir::Block) -> Result<Value> {
+		for stmt in block.stmts {
+			self.codegen_stmt(stmt)?;
+		}
+
+		if let Some(expr) = block.ret_expr {
+			self.codegen_expr(expr)
+		} else {
+			todo!()
+		}
+	}
+
+	fn codegen_stmt(&mut self, stmt: &hir::Stmt) -> Result<()> {
+		match stmt.kind {
+			hir::StmtKind::Expr(expr) => {
+				self.codegen_expr(expr)?;
+				Ok(())
+			}
+			hir::StmtKind::Let { ident, value, .. } => {
+				let expr_value = self.codegen_expr(value)?;
+				let value = self
+					.variable_generator
+					.create_var(&mut self.builder, expr_value);
+				self.values.insert(ident.name, value);
+				Ok(())
+			}
+			hir::StmtKind::Assign { target, value } => {
+				let variable = *self.values.get(&target.name).unwrap();
+				let expr_value = self.codegen_expr(value)?;
+				self.builder.def_var(variable, expr_value);
+
+				Ok(())
+			}
+			hir::StmtKind::Loop { block } => {
+				let loop_header = self.builder.create_block();
+				self.builder.switch_to_block(loop_header);
+				self.codegen_block(block)?;
+				self.builder.ins().jump(loop_header, &[]);
+				self.builder.seal_block(loop_header);
+				Ok(())
+			}
+		}
+	}
+
+	fn codegen_expr(&mut self, expr: &hir::Expr) -> Result<Value> {
+		let value = match expr.kind {
+			hir::ExprKind::Literal(lit, sym) => {
+				let sym = self.fcx.symbols.resolve(sym);
+				match lit {
+					lexer::LiteralKind::Integer => self
+						.builder
+						.ins()
+						.iconst(types::I64, sym.parse::<i64>().unwrap()),
+					lexer::LiteralKind::Float => {
+						self.builder.ins().f64const(sym.parse::<f64>().unwrap())
+					}
+					lexer::LiteralKind::Str => todo!(),
+				}
+			}
+			hir::ExprKind::Variable(ident) => match self.values.get(&ident.name) {
 				Some(var) => self.builder.use_var(*var),
 				None => return Err("var undefined"),
 			},
-			Expr::Binary { op, left, right } => {
-				let lhs = self.expr(left)?;
-				let rhs = self.expr(right)?;
+			hir::ExprKind::Binary(op, left, right) => {
+				let lhs = self.codegen_expr(left)?;
+				let rhs = self.codegen_expr(right)?;
 
-				match op {
-					Operator::Plus => self.builder.ins().iadd(lhs, rhs),
-					Operator::Minus => self.builder.ins().isub(lhs, rhs),
-					Operator::Mul => self.builder.ins().imul(lhs, rhs),
-					Operator::Div => self.builder.ins().udiv(lhs, rhs),
+				match op.bit {
+					lexer::BinOp::Plus => self.builder.ins().iadd(lhs, rhs),
+					lexer::BinOp::Minus => self.builder.ins().isub(lhs, rhs),
+					lexer::BinOp::Mul => self.builder.ins().imul(lhs, rhs),
+					lexer::BinOp::Div => self.builder.ins().udiv(lhs, rhs),
+					lexer::BinOp::Mod => self.builder.ins().urem(lhs, rhs),
 
-					Operator::Gt => self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs),
-					Operator::Lt => self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs),
-					Operator::Eq => self.builder.ins().icmp(IntCC::Equal, lhs, rhs),
+					lexer::BinOp::Gt => self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs),
+					lexer::BinOp::Ge => {
+						self.builder
+							.ins()
+							.icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs)
+					}
+					lexer::BinOp::Lt => self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs),
+					lexer::BinOp::Le => {
+						self.builder
+							.ins()
+							.icmp(IntCC::SignedLessThanOrEqual, lhs, rhs)
+					}
+					lexer::BinOp::EqEq => self.builder.ins().icmp(IntCC::Equal, lhs, rhs),
+					lexer::BinOp::Ne => self.builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
 				}
 			}
-			Expr::FnCall { ident, args } => match self.functions.get(ident) {
-				Some(func) => {
-					if func.param_count != args.len() {
-						return Err("invalid fn call: args nb mismatch");
-					}
+			hir::ExprKind::FnCall { expr, args } => {
+				let hir::ExprKind::Variable(ident) = expr.kind else {
+					todo!("not a fn")
+				};
+				let Some(func) = self.functions.get(&ident.name) else {
+					return Err("invalid fn call");
+				};
 
-					let local_func = self.module.declare_func_in_func(func.id, self.builder.func);
-
-					let args = args
-						.iter()
-						.map(|arg| self.expr(arg))
-						.collect::<Result<Vec<_>>>()?;
-
-					let call = self.builder.ins().call(local_func, &args);
-
-					self.builder.inst_results(call)[0]
+				if func.param_count != args.len() {
+					return Err("invalid fn call: args nb mismatch");
 				}
-				None => return Err("invalid fn call"),
-			},
-			Expr::If {
-				condition,
-				consequence,
-				alternative,
+
+				let local_func = self.module.declare_func_in_func(func.id, self.builder.func);
+
+				let args = args
+					.iter()
+					.map(|arg| self.codegen_expr(arg))
+					.collect::<Result<Vec<_>>>()?;
+
+				let call = self.builder.ins().call(local_func, &args);
+
+				self.builder.inst_results(call)[0]
+			}
+			hir::ExprKind::If {
+				cond,
+				conseq,
+				altern,
 			} => {
-				let condition = self.expr(condition)?;
+				let condition = self.codegen_expr(cond)?;
 
 				let then_block = self.builder.create_block();
-				let else_block = self.builder.create_block();
+				// only make a block if the if has an alternative
+				let else_block = altern.map(|_| self.builder.create_block());
 				let cont_block = self.builder.create_block();
 
 				// cranelift block params are used like phi values
 				self.builder.append_block_param(cont_block, types::I64);
 
-				self.builder
-					.ins()
-					.brif(condition, then_block, &[], else_block, &[]);
+				self.builder.ins().brif(
+					condition,
+					then_block,
+					&[],
+					else_block.unwrap_or(cont_block),
+					&[],
+				);
 
 				self.builder.switch_to_block(then_block);
 				self.builder.seal_block(then_block);
-				let then_ret = self.expr(consequence)?;
+				let then_ret = self.codegen_block(conseq)?;
 
 				self.builder.ins().jump(cont_block, &[then_ret.into()]);
 
-				self.builder.switch_to_block(else_block);
-				self.builder.seal_block(else_block);
-				let else_ret = self.expr(alternative)?;
+				if let Some(altern) = altern {
+					// TODO
+					let else_block = else_block.unwrap();
 
-				self.builder.ins().jump(cont_block, &[else_ret.into()]);
+					self.builder.switch_to_block(else_block);
+					self.builder.seal_block(else_block);
+
+					let else_ret = self.codegen_block(altern)?;
+					self.builder.ins().jump(cont_block, &[else_ret.into()]);
+				}
 
 				self.builder.switch_to_block(cont_block);
 				self.builder.seal_block(cont_block);
 
 				self.builder.block_params(cont_block)[0]
 			}
-			Expr::ForLoop {
-				init_name,
-				init,
-				check,
-				increment,
-				body,
-			} => {
-				let index = self.expr(init)?;
-
-				let loop_block = self.builder.create_block();
-				let post_loop_block = self.builder.create_block();
-
-				// index
-				let index_value = self.builder.append_block_param(loop_block, types::I64);
-				let index_var = self
-					.variable_generator
-					.create_var(&mut self.builder, index_value);
-				self.values.insert(init_name.clone(), index_var);
-
-				self.builder.ins().jump(loop_block, &[index.into()]);
-
-				self.builder.switch_to_block(loop_block);
-
-				self.expr(body)?;
-
-				let step_val = if let Some(increment) = increment {
-					self.expr(increment)?
-				} else {
-					self.builder.ins().iconst(types::I64, 1)
-				};
-				let next_val = self.builder.ins().iadd(index_value, step_val);
-
-				let end_cond = self.expr(check)?;
-
-				self.builder.ins().brif(
-					end_cond,
-					loop_block,
-					&[next_val.into()],
-					post_loop_block,
-					&[],
-				);
-				self.builder.seal_block(loop_block);
-
-				self.builder.switch_to_block(post_loop_block);
-				self.builder.seal_block(post_loop_block);
-
-				self.builder.ins().iconst(types::I64, 0)
+			hir::ExprKind::Break(expr) => {
+				let expr_value = expr.map(|expr| self.codegen_expr(expr));
+				todo!("break expr")
+			}
+			hir::ExprKind::Continue => {
+				todo!("continue expr")
 			}
 		};
 

@@ -40,10 +40,15 @@ struct Args {
 fn main() {
 	let args = Args::parse();
 
-	let content = std::fs::read_to_string(args.path).unwrap();
+	let source = std::fs::read_to_string(&args.path).unwrap();
 
+	pipeline(&args, &source);
+}
+
+fn pipeline(args: &Args, source: &str) {
 	// parsing source
-	let ast = parser::Parser::new(&content).parse_file().unwrap();
+	let ast = parser::Parser::new(source).parse_file().unwrap();
+	insta::assert_debug_snapshot!(ast);
 	if args.p_ast {
 		println!("{ast:#?}");
 	}
@@ -52,6 +57,7 @@ fn main() {
 	let lcx = lowerer::LowerCtx::new();
 	let lowerer = lowerer::Lowerer::new(&lcx);
 	let hir = lowerer.lower_items(&ast);
+	insta::assert_debug_snapshot!(hir);
 	if args.p_hir {
 		println!("{hir:#?}");
 	}

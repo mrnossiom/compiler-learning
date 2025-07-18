@@ -35,6 +35,8 @@
               act
 
               llvmPackages.llvm.dev
+
+              cargo-insta
             ];
 
             buildInputs = with pkgs; [

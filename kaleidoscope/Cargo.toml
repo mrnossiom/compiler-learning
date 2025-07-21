@@ -28,6 +28,8 @@ insta = "1"
 # default = ["llvm"]
 default = ["cranelift"]
 
+debug = []
+
 llvm = ["dep:inkwell"]
 cranelift = [
   "dep:cranelift",

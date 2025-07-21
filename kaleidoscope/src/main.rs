@@ -1,16 +1,16 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use kaleidoscope::{front, hir, lowerer, parser, ty};
+use kaleidoscope::{lowerer, parser, session, ty};
 
 #[derive(clap::Parser)]
 struct Args {
 	pub path: PathBuf,
 
 	#[clap(long)]
-	pub p_ast: bool,
+	pub print_ast: bool,
 	#[clap(long)]
-	pub p_hir: bool,
+	pub print_hir: bool,
 }
 
 fn main() {
@@ -22,38 +22,25 @@ fn main() {
 }
 
 fn pipeline(args: &Args, source: &str) {
-	let fcx = front::FrontCtx::new();
+	let fcx = session::SessionCtx::new();
 
 	// parsing source
 	let ast = parser::Parser::new(&fcx, source).parse_file().unwrap();
-	if args.p_ast {
+	if args.print_ast {
 		println!("{ast:#?}");
 	}
 
 	// lowering to HIR
 	let lcx = lowerer::LowerCtx::new();
-	let lowerer = lowerer::Lowerer::new(&lcx);
-	let hir = lowerer.lower_items(&ast);
-	if args.p_hir {
+	let hir = lcx.lower_root(&ast);
+	if args.print_hir {
 		println!("{hir:#?}");
 	}
 
 	// type collection, inference and analysis
-	let tcx = ty::TyCtx::new(&fcx);
-
-	// TODO: HIR type collection
-	let ty_collector = ty::Collector::new(&tcx);
-
-	// TODO: HIR typeck
-	let inferer = ty::Inferer::new(&tcx);
-	for item in hir.items {
-		match item {
-			hir::ItemKind::Extern { ident, decl } => {}
-			hir::ItemKind::Function { ident, decl, body } => {
-				inferer.infer_fn(decl, body);
-			}
-		}
-	}
+	let mut tcx = ty::TyCtx::new(&fcx);
+	let item_env = tcx.collect_hir(&hir);
+	tcx.infer_root(&hir, &item_env);
 
 	// TODO: lower HIR bodies to TBIR
 
@@ -64,4 +51,6 @@ fn pipeline(args: &Args, source: &str) {
 	// 	#[cfg(feature = "llvm")]
 	// 	&context,
 	// );
+
+	println!("Reached pipeline end sucessfully!");
 }

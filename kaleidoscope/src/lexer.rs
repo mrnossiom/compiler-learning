@@ -4,7 +4,7 @@ use core::fmt;
 use std::{cmp, str::Chars};
 
 use crate::ast::Ident;
-use crate::front::{FrontCtx, Symbol};
+use crate::session::{SessionCtx, Symbol};
 
 #[allow(clippy::enum_glob_use)]
 use self::{BinOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*};
@@ -24,6 +24,7 @@ pub struct Span {
 impl Span {
 	const DUMMY: Self = Self::new(u32::MAX, u32::MAX);
 
+	#[must_use]
 	pub const fn new(start: u32, end: u32) -> Self {
 		Self { start, end }
 	}
@@ -33,6 +34,22 @@ impl Span {
 		Self {
 			start: cmp::min(self.start, span.start),
 			end: cmp::max(self.end, span.end),
+		}
+	}
+
+	#[must_use]
+	pub const fn start(self) -> Self {
+		Self {
+			start: self.start,
+			end: self.start,
+		}
+	}
+
+	#[must_use]
+	pub const fn end(self) -> Self {
+		Self {
+			start: self.end,
+			end: self.end,
 		}
 	}
 }
@@ -52,6 +69,7 @@ pub struct Token {
 impl Token {
 	pub const DUMMY: Self = Self::new(Eof, Span::DUMMY);
 
+	#[must_use]
 	pub const fn new(kind: TokenKind, span: Span) -> Self {
 		Self { kind, span }
 	}
@@ -71,6 +89,7 @@ impl Token {
 		Some(Self::new(glued_kind, self.span.to(next.span)))
 	}
 
+	#[must_use]
 	pub const fn as_ident(self) -> Option<Ident> {
 		match self.kind {
 			Ident(sym) => Some(Ident::new(sym, self.span)),
@@ -164,6 +183,7 @@ pub enum BinOp {
 }
 
 impl BinOp {
+	#[must_use]
 	pub const fn precedence(self) -> u32 {
 		match self {
 			Self::Mul | Self::Div | Self::Mod => 4,
@@ -178,7 +198,7 @@ const EOF_CHAR: char = '\0';
 
 #[derive(Debug, Clone)]
 pub struct Lexer<'fcx, 'src> {
-	fcx: &'fcx FrontCtx,
+	fcx: &'fcx SessionCtx,
 
 	source: &'src str,
 	chars: Chars<'src>,
@@ -189,7 +209,8 @@ pub struct Lexer<'fcx, 'src> {
 }
 
 impl<'fcx, 'src> Lexer<'fcx, 'src> {
-	pub fn new(fcx: &'fcx FrontCtx, source: &'src str) -> Self {
+	#[must_use]
+	pub fn new(fcx: &'fcx SessionCtx, source: &'src str) -> Self {
 		let chars = source.chars();
 		Self {
 			fcx,

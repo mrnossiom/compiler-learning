@@ -4,10 +4,10 @@
 use inkwell::context::Context;
 
 // pub mod codegen;
-pub mod front;
 pub mod lexer;
 pub mod lowerer;
 pub mod parser;
+pub mod session;
 pub mod ty;
 
 // IRs

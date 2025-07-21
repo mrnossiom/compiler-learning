@@ -1,15 +1,20 @@
 //! Higher IR
 
-use crate::{ast, front::Symbol, lexer};
+use crate::{
+	ast::{self, Spanned},
+	lexer::{BinOp, LiteralKind, Span},
+	session::Symbol,
+};
 
 #[derive(Debug)]
-pub struct Hir<'lcx> {
-	/// Roots of the typed IR
-	pub items: &'lcx [ItemKind<'lcx>],
-	//
-	// blocks: IndexVec<BlkId, Block>,
-	// exprs: IndexVec<ExprId, Expr>,
-	// stmts: IndexVec<StmtId, Stmt>,
+pub struct Root<'lcx> {
+	pub items: &'lcx [Item<'lcx>],
+}
+
+#[derive(Debug)]
+pub struct Item<'lcx> {
+	pub kind: ItemKind<'lcx>,
+	pub span: Span,
 }
 
 #[derive(Debug)]
@@ -27,8 +32,10 @@ pub enum ItemKind<'lcx> {
 
 #[derive(Debug, Clone)]
 pub struct FnDecl<'lcx> {
-	pub inputs: &'lcx [(ast::Ident, ast::TyKind)],
-	pub output: &'lcx ast::TyKind,
+	pub inputs: &'lcx [(ast::Ident, ast::Ty)],
+	pub output: &'lcx ast::Ty,
+
+	pub span: Span,
 }
 
 #[derive(Debug)]
@@ -40,6 +47,7 @@ pub struct Block<'lcx> {
 #[derive(Debug)]
 pub struct Stmt<'lcx> {
 	pub kind: StmtKind<'lcx>,
+	pub span: Span,
 }
 
 #[derive(Debug)]
@@ -47,9 +55,9 @@ pub enum StmtKind<'lcx> {
 	Expr(&'lcx Expr<'lcx>),
 
 	Let {
-		name: ast::Ident,
+		ident: ast::Ident,
+		ty: &'lcx ast::Ty,
 		value: &'lcx Expr<'lcx>,
-		ty: &'lcx ast::TyKind,
 	},
 
 	// move these to expr
@@ -66,14 +74,15 @@ pub enum StmtKind<'lcx> {
 #[derive(Debug)]
 pub struct Expr<'lcx> {
 	pub kind: ExprKind<'lcx>,
+	pub span: Span,
 }
 
 #[derive(Debug)]
 pub enum ExprKind<'lcx> {
 	Variable(ast::Ident),
-	Literal(lexer::LiteralKind, Symbol),
+	Literal(LiteralKind, Symbol),
 
-	Binary(lexer::BinOp, &'lcx Expr<'lcx>, &'lcx Expr<'lcx>),
+	Binary(Spanned<BinOp>, &'lcx Expr<'lcx>, &'lcx Expr<'lcx>),
 
 	FnCall {
 		expr: &'lcx Expr<'lcx>,

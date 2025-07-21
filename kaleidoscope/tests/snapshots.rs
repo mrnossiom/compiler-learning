@@ -1,10 +1,10 @@
-use kaleidoscope::{front, lowerer, parser};
+use kaleidoscope::{lowerer, parser, session};
 
 #[test]
 fn fibo() {
 	let source = include_str!("../samples/fibonacci.txt");
 
-	let fcx = front::FrontCtx::new();
+	let fcx = session::SessionCtx::new();
 
 	let ast = parser::Parser::new(&fcx, source).parse_file().unwrap();
 	insta::assert_debug_snapshot!(ast);

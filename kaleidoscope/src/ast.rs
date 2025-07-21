@@ -3,17 +3,18 @@
 use std::fmt;
 
 use crate::{
-	front::Symbol,
 	lexer::{BinOp, LiteralKind, Span},
+	session::Symbol,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Ident {
 	pub name: Symbol,
 	pub span: Span,
 }
 
 impl Ident {
+	#[must_use]
 	pub const fn new(name: Symbol, span: Span) -> Self {
 		Self { name, span }
 	}
@@ -25,6 +26,24 @@ impl fmt::Debug for Ident {
 	}
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Spanned<T> {
+	pub bit: T,
+	pub span: Span,
+}
+
+impl<T> Spanned<T> {
+	pub const fn new(bit: T, span: Span) -> Self {
+		Self { bit, span }
+	}
+}
+
+#[derive(Debug)]
+pub struct Expr {
+	pub kind: ExprKind,
+	pub span: Span,
+}
+
 #[derive(Debug)]
 pub enum ExprKind {
 	// Expression atomics
@@ -32,17 +51,17 @@ pub enum ExprKind {
 	Literal(LiteralKind, Symbol),
 
 	Binary {
-		op: BinOp,
-		left: Box<ExprKind>,
-		right: Box<ExprKind>,
+		op: Spanned<BinOp>,
+		left: Box<Expr>,
+		right: Box<Expr>,
 	},
 	FnCall {
-		expr: Box<ExprKind>,
-		args: Vec<ExprKind>,
+		expr: Box<Expr>,
+		args: Vec<Expr>,
 	},
 
 	If {
-		cond: Box<ExprKind>,
+		cond: Box<Expr>,
 		conseq: Box<Block>,
 		altern: Option<Box<Block>>,
 	},
@@ -50,28 +69,37 @@ pub enum ExprKind {
 
 #[derive(Debug)]
 pub struct Block {
-	pub stmts: Vec<StmtKind>,
+	pub stmts: Vec<Stmt>,
 	pub span: Span,
 }
 
 #[derive(Debug)]
 pub struct FnDecl {
-	pub args: Vec<(Ident, TyKind)>,
-	pub ret: TyKind,
+	pub args: Vec<(Ident, Ty)>,
+	pub ret: Option<Ty>,
+
+	pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct Ty {
+	pub kind: TyKind,
+	pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub enum TyKind {
-	Path(Vec<Ident>, Vec<TyKind>),
+	Path(Vec<Ident>, Option<Vec<Ty>>),
 
 	Unit,
 
 	Infer,
 }
 
+#[derive(Debug)]
 pub struct Item {
-	kind: ItemKind,
-	span: Span,
+	pub kind: ItemKind,
+	pub span: Span,
 }
 
 #[derive(Debug)]
@@ -88,35 +116,46 @@ pub enum ItemKind {
 }
 
 #[derive(Debug)]
+pub struct Stmt {
+	pub kind: StmtKind,
+	pub span: Span,
+}
+
+#[derive(Debug)]
 pub enum StmtKind {
 	Loop {
 		body: Box<Block>,
 	},
 	WhileLoop {
-		check: Box<ExprKind>,
+		check: Box<Expr>,
 		body: Box<Block>,
 	},
 	ForLoop {
 		pat: Ident,
-		iter: Box<ExprKind>,
+		iter: Box<Expr>,
 		body: Box<Block>,
 	},
 
 	Let {
-		name: Ident,
-		ty: TyKind,
-		value: Box<ExprKind>,
+		ident: Ident,
+		ty: Option<Box<Ty>>,
+		value: Box<Expr>,
 	},
 	Assign {
 		target: Ident,
-		value: Box<ExprKind>,
+		value: Box<Expr>,
 	},
 
-	Expr(Box<ExprKind>),
+	Expr(Box<Expr>),
 
 	/// Expression without a semi to return a value at the end of a block
-	ExprRet(Box<ExprKind>),
+	ExprRet(Box<Expr>),
 
 	/// A single lonely `;`
 	Empty,
+}
+
+#[derive(Debug)]
+pub struct Root {
+	pub items: Vec<Item>,
 }

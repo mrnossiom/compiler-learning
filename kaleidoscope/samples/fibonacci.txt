@@ -16,17 +16,16 @@ fn fibo(n: uint) uint {
 	b
 }
 
-/*
-// This is a more advanced example
-fn num_to_ascii(n: uint) Option<uint> {
+fn num_to_ascii(n: uint) uint /*Option<uint>*/ {
 	if n <= 9 {
-		const NUM_ASCII_BASE := 48;
-		Some(NUM_ASCII_BASE + n)
+		num_ascii_base := 48;
+		// Some(num_ascii_base + n)
+		num_ascii_base + n
 	} else {
-		None
+		// None
+		21
 	}
 }
-*/
 
 fn print_num(n: uint) {
 	if n == 0 {

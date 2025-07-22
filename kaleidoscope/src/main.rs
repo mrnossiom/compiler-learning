@@ -25,10 +25,10 @@ fn main() {
 }
 
 fn pipeline(args: &Args, source: &str) {
-	let fcx = session::SessionCtx::new();
+	let scx = session::SessionCtx::new();
 
 	// parsing source
-	let ast = parser::Parser::new(&fcx, source).parse_file().unwrap();
+	let ast = parser::Parser::new(&scx, source).parse_file().unwrap();
 	if args.print_ast {
 		println!("{ast:#?}");
 	}
@@ -41,7 +41,7 @@ fn pipeline(args: &Args, source: &str) {
 	}
 
 	// type collection, inference and analysis
-	let mut tcx = ty::TyCtx::new(&fcx);
+	let mut tcx = ty::TyCtx::new(&scx);
 	let item_env = tcx.collect_hir(&hir);
 	tcx.infer_root(&hir, &item_env);
 
@@ -51,7 +51,7 @@ fn pipeline(args: &Args, source: &str) {
 	#[cfg(feature = "llvm")]
 	let context = Context::create();
 	let mut generator = codegen::Generator::new(
-		&fcx,
+		&scx,
 		#[cfg(feature = "llvm")]
 		&context,
 	);

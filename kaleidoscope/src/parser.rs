@@ -15,21 +15,21 @@ use crate::{
 
 pub type PResult<T> = Result<T, Cow<'static, str>>;
 
-pub struct Parser<'fcx> {
-	fcx: &'fcx SessionCtx,
+pub struct Parser<'scx> {
+	scx: &'scx SessionCtx,
 
-	lexer: Lexer<'fcx, 'fcx>,
+	lexer: Lexer<'scx, 'scx>,
 
 	token: Token,
 	last_token: Token,
 }
 
-impl<'fcx> Parser<'fcx> {
-	pub fn new(fcx: &'fcx SessionCtx, content: &'fcx str) -> Self {
+impl<'scx> Parser<'scx> {
+	pub fn new(scx: &'scx SessionCtx, content: &'scx str) -> Self {
 		let mut parser = Self {
-			fcx,
+			scx,
 
-			lexer: Lexer::new(fcx, content),
+			lexer: Lexer::new(scx, content),
 
 			token: Token::DUMMY,
 			last_token: Token::DUMMY,

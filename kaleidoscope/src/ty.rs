@@ -6,14 +6,14 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct TyCtx<'fcx> {
-	fcx: &'fcx SessionCtx,
+pub struct TyCtx<'scx> {
+	scx: &'scx SessionCtx,
 }
 
-impl<'fcx> TyCtx<'fcx> {
+impl<'scx> TyCtx<'scx> {
 	#[must_use]
-	pub const fn new(fcx: &'fcx SessionCtx) -> Self {
-		Self { fcx }
+	pub const fn new(scx: &'scx SessionCtx) -> Self {
+		Self { scx }
 	}
 }
 
@@ -60,7 +60,7 @@ impl TyCtx<'_> {
 	}
 
 	fn lower_path_ty(&self, path: ast::Ident) -> TyKind {
-		match self.fcx.symbols.resolve(path.name).as_str() {
+		match self.scx.symbols.resolve(path.name).as_str() {
 			"number" => TyKind::Integer,
 			"str" => TyKind::Str,
 

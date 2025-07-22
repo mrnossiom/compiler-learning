@@ -198,8 +198,8 @@ impl BinOp {
 const EOF_CHAR: char = '\0';
 
 #[derive(Debug, Clone)]
-pub struct Lexer<'fcx, 'src> {
-	fcx: &'fcx SessionCtx,
+pub struct Lexer<'scx, 'src> {
+	scx: &'scx SessionCtx,
 
 	source: &'src str,
 	chars: Chars<'src>,
@@ -209,12 +209,12 @@ pub struct Lexer<'fcx, 'src> {
 	next_glued: Option<Token>,
 }
 
-impl<'fcx, 'src> Lexer<'fcx, 'src> {
+impl<'scx, 'src> Lexer<'scx, 'src> {
 	#[must_use]
-	pub fn new(fcx: &'fcx SessionCtx, source: &'src str) -> Self {
+	pub fn new(scx: &'scx SessionCtx, source: &'src str) -> Self {
 		let chars = source.chars();
 		Self {
-			fcx,
+			scx,
 			source,
 			chars,
 			token: None,
@@ -277,7 +277,7 @@ impl Lexer<'_, '_> {
 						"for" => Keyword(For),
 						"in" => Keyword(In),
 
-						ident => TokenKind::Ident(self.fcx.symbols.intern(ident)),
+						ident => TokenKind::Ident(self.scx.symbols.intern(ident)),
 					}
 				}
 
@@ -291,7 +291,7 @@ impl Lexer<'_, '_> {
 					} else {
 						Integer
 					};
-					Literal(kind, self.fcx.symbols.intern(self.str_from(start)))
+					Literal(kind, self.scx.symbols.intern(self.str_from(start)))
 				}
 
 				'"' => {
@@ -308,7 +308,7 @@ impl Lexer<'_, '_> {
 
 					// strip quotes
 					let symbol = self.str_from_to(start + 1, self.offset - 1);
-					Literal(Str, self.fcx.symbols.intern(symbol))
+					Literal(Str, self.scx.symbols.intern(symbol))
 				}
 
 				// Non-significative whitespace

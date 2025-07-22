@@ -4,9 +4,9 @@ use kaleidoscope::{lowerer, parser, session};
 fn fibo() {
 	let source = include_str!("../samples/fibonacci.txt");
 
-	let fcx = session::SessionCtx::new();
+	let scx = session::SessionCtx::new();
 
-	let ast = parser::Parser::new(&fcx, source).parse_file().unwrap();
+	let ast = parser::Parser::new(&scx, source).parse_file().unwrap();
 	insta::assert_debug_snapshot!(ast);
 
 	// lowering to HIR

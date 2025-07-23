@@ -8,8 +8,9 @@ use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use crate::{
 	Result, ast,
 	codegen::CodeGen,
-	hir, lexer,
+	lexer,
 	session::{SessionCtx, Symbol},
+	tbir, ty,
 };
 
 pub struct Generator<'scx> {
@@ -40,13 +41,18 @@ impl<'scx> Generator<'scx> {
 		}
 	}
 
-	// TODO: use ty::TyKind when introducing tbir
-	fn to_abi_ty(&self, output: &ast::Ty) -> AbiParam {
-		match &output.kind {
-			ast::TyKind::Path(path, _generics) => panic!("{path:?}"),
-			ast::TyKind::Unit => AbiParam::new(types::Type::int(0).unwrap()),
-			ast::TyKind::Infer => panic!("all types are inferred at this point"),
-		}
+	fn to_abi_ty(&self, output: &ty::TyKind) -> AbiParam {
+		let ty = match &output {
+			ty::TyKind::Unit => types::I8, // TODO: unit is zst
+			ty::TyKind::Never => todo!(),
+			ty::TyKind::Bool => types::I8,
+			ty::TyKind::Integer => types::I32,
+			ty::TyKind::Float => types::F32,
+			ty::TyKind::Str => todo!(),
+			ty::TyKind::Fn(fn_decl) => types::I32,
+			ty::TyKind::Infer(_) => unreachable!(),
+		};
+		AbiParam::new(ty)
 	}
 }
 
@@ -54,16 +60,16 @@ impl Generator<'_> {
 	pub fn declare_func(
 		&mut self,
 		name: Symbol,
-		decl: &hir::FnDecl,
+		decl: &ty::FnDecl,
 		linkage: Linkage,
 	) -> Result<FuncId> {
 		match self.functions.get(&name) {
 			None => {
 				let mut signature = self.module.make_signature();
-				for (_name, ty) in decl.inputs {
+				for ty::Param(_name, ty) in &decl.inputs {
 					signature.params.push(self.to_abi_ty(ty));
 				}
-				signature.returns.push(self.to_abi_ty(decl.output));
+				signature.returns.push(self.to_abi_ty(&decl.output));
 
 				let func_name = self.scx.symbols.resolve(name);
 				let func_id = self
@@ -89,7 +95,7 @@ impl Generator<'_> {
 impl CodeGen for Generator<'_> {
 	type Fn = fn() -> i64;
 
-	fn extern_(&mut self, name: Symbol, decl: &hir::FnDecl) -> Result<()> {
+	fn extern_(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<()> {
 		self.declare_func(name, decl, Linkage::Import)?;
 		Ok(())
 	}
@@ -97,16 +103,16 @@ impl CodeGen for Generator<'_> {
 	fn function(
 		&mut self,
 		name: Symbol,
-		decl: &hir::FnDecl,
-		body: &hir::Block,
+		decl: &ty::FnDecl,
+		body: &tbir::Block,
 	) -> Result<Self::Fn> {
 		let mut context = self.module.make_context();
 
 		let signature = &mut context.func.signature;
-		for (_name, ty) in decl.inputs {
+		for ty::Param(_name, ty) in &decl.inputs {
 			signature.params.push(self.to_abi_ty(ty));
 		}
-		signature.returns.push(self.to_abi_ty(decl.output));
+		signature.returns.push(self.to_abi_ty(&decl.output));
 
 		let func_id = self.declare_func(name, decl, Linkage::Export)?;
 
@@ -118,7 +124,7 @@ impl CodeGen for Generator<'_> {
 		builder.seal_block(entry_block);
 
 		let mut values = HashMap::new();
-		for (i, (argument, ty)) in decl.inputs.iter().enumerate() {
+		for (i, ty::Param(argument, _ty)) in decl.inputs.iter().enumerate() {
 			let value = builder.block_params(entry_block)[i];
 			let variable = self.variable_generator.create_var(&mut builder, value);
 			values.insert(argument.name, variable);
@@ -204,25 +210,25 @@ pub struct FunctionGenerator<'scx, 'bld> {
 }
 
 impl FunctionGenerator<'_, '_> {
-	fn codegen_block(&mut self, block: &hir::Block) -> Result<Value> {
-		for stmt in block.stmts {
+	fn codegen_block(&mut self, block: &tbir::Block) -> Result<Value> {
+		for stmt in &block.stmts {
 			self.codegen_stmt(stmt)?;
 		}
 
-		if let Some(expr) = block.ret_expr {
+		if let Some(expr) = &block.ret {
 			self.codegen_expr(expr)
 		} else {
 			todo!()
 		}
 	}
 
-	fn codegen_stmt(&mut self, stmt: &hir::Stmt) -> Result<()> {
-		match stmt.kind {
-			hir::StmtKind::Expr(expr) => {
+	fn codegen_stmt(&mut self, stmt: &tbir::Stmt) -> Result<()> {
+		match &stmt.kind {
+			tbir::StmtKind::Expr(expr) => {
 				self.codegen_expr(expr)?;
 				Ok(())
 			}
-			hir::StmtKind::Let { ident, value, .. } => {
+			tbir::StmtKind::Let { ident, value, .. } => {
 				let expr_value = self.codegen_expr(value)?;
 				let value = self
 					.variable_generator
@@ -230,14 +236,14 @@ impl FunctionGenerator<'_, '_> {
 				self.values.insert(ident.name, value);
 				Ok(())
 			}
-			hir::StmtKind::Assign { target, value } => {
+			tbir::StmtKind::Assign { target, value } => {
 				let variable = *self.values.get(&target.name).unwrap();
 				let expr_value = self.codegen_expr(value)?;
 				self.builder.def_var(variable, expr_value);
 
 				Ok(())
 			}
-			hir::StmtKind::Loop { block } => {
+			tbir::StmtKind::Loop { block } => {
 				let loop_header = self.builder.create_block();
 				self.builder.switch_to_block(loop_header);
 				self.codegen_block(block)?;
@@ -248,10 +254,10 @@ impl FunctionGenerator<'_, '_> {
 		}
 	}
 
-	fn codegen_expr(&mut self, expr: &hir::Expr) -> Result<Value> {
-		let value = match expr.kind {
-			hir::ExprKind::Literal(lit, sym) => {
-				let sym = self.scx.symbols.resolve(sym);
+	fn codegen_expr(&mut self, expr: &tbir::Expr) -> Result<Value> {
+		let value = match &expr.kind {
+			tbir::ExprKind::Literal(lit, sym) => {
+				let sym = self.scx.symbols.resolve(*sym);
 				match lit {
 					lexer::LiteralKind::Integer => self
 						.builder
@@ -263,13 +269,13 @@ impl FunctionGenerator<'_, '_> {
 					lexer::LiteralKind::Str => todo!(),
 				}
 			}
-			hir::ExprKind::Variable(ident) => match self.values.get(&ident.name) {
+			tbir::ExprKind::Variable(ident) => match self.values.get(&ident.name) {
 				Some(var) => self.builder.use_var(*var),
 				None => return Err("var undefined"),
 			},
-			hir::ExprKind::Binary(op, left, right) => self.codegen_binop(op, left, right)?,
-			hir::ExprKind::FnCall { expr, args } => {
-				let hir::ExprKind::Variable(ident) = expr.kind else {
+			tbir::ExprKind::Binary(op, left, right) => self.codegen_binop(*op, left, right)?,
+			tbir::ExprKind::FnCall { expr, args } => {
+				let tbir::ExprKind::Variable(ident) = expr.kind else {
 					todo!("not a fn")
 				};
 				let Some(func) = self.functions.get(&ident.name) else {
@@ -291,7 +297,7 @@ impl FunctionGenerator<'_, '_> {
 
 				self.builder.inst_results(call)[0]
 			}
-			hir::ExprKind::If {
+			tbir::ExprKind::If {
 				cond,
 				conseq,
 				altern,
@@ -300,7 +306,7 @@ impl FunctionGenerator<'_, '_> {
 
 				let then_block = self.builder.create_block();
 				// only make a block if the if has an alternative
-				let else_block = altern.map(|_| self.builder.create_block());
+				let else_block = altern.as_ref().map(|_| self.builder.create_block());
 				let cont_block = self.builder.create_block();
 
 				// cranelift block params are used like phi values
@@ -336,11 +342,11 @@ impl FunctionGenerator<'_, '_> {
 
 				self.builder.block_params(cont_block)[0]
 			}
-			hir::ExprKind::Break(expr) => {
-				let expr_value = expr.map(|expr| self.codegen_expr(expr));
+			tbir::ExprKind::Break(expr) => {
+				let expr_value = expr.as_ref().map(|expr| self.codegen_expr(expr));
 				todo!("break expr")
 			}
-			hir::ExprKind::Continue => {
+			tbir::ExprKind::Continue => {
 				todo!("continue expr")
 			}
 		};
@@ -351,8 +357,8 @@ impl FunctionGenerator<'_, '_> {
 	fn codegen_binop(
 		&mut self,
 		op: ast::Spanned<lexer::BinOp>,
-		left: &hir::Expr,
-		right: &hir::Expr,
+		left: &tbir::Expr,
+		right: &tbir::Expr,
 	) -> Result<Value> {
 		let lhs = self.codegen_expr(left)?;
 		let rhs = self.codegen_expr(right)?;

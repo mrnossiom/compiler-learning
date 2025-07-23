@@ -41,6 +41,8 @@ cranelift = [
 ]
 
 [lints.rust]
+# missing_docs = "warn"
+
 # not forbid because jit-ing is inherently unsafe
 unsafe_code = "deny"
 [lints.rustdoc]
@@ -56,4 +58,5 @@ dbg_macro = "warn"
 todo = "warn"
 # unwrap_used = "warn"
 
+must_use_candidate = "allow"
 wildcard_imports = "allow"

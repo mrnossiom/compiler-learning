@@ -1,19 +1,19 @@
 //! Tokens to AST parsing logic
 
-use std::{borrow::Cow, mem};
+use std::mem;
 
 #[allow(clippy::enum_glob_use)]
 use crate::lexer::{BinOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*};
 use crate::{
 	ast::{
-		Block, Expr, ExprKind, FnDecl, Ident, Item, ItemKind, Root, Spanned, Stmt, StmtKind, Ty,
-		TyKind,
+		Block, Expr, ExprKind, FnDecl, Ident, Item, ItemKind, NodeId, Root, Spanned, Stmt,
+		StmtKind, Ty, TyKind,
 	},
 	lexer::{Delimiter, Lexer, Token, TokenKind},
-	session::SessionCtx,
+	session::{Diagnostic, SessionCtx, SourceFile},
 };
 
-pub type PResult<T> = Result<T, Cow<'static, str>>;
+pub type PResult<T> = Result<T, Diagnostic>;
 
 pub struct Parser<'scx> {
 	scx: &'scx SessionCtx,
@@ -22,17 +22,21 @@ pub struct Parser<'scx> {
 
 	token: Token,
 	last_token: Token,
+
+	next_node_id: u32,
 }
 
 impl<'scx> Parser<'scx> {
-	pub fn new(scx: &'scx SessionCtx, content: &'scx str) -> Self {
+	pub fn new(scx: &'scx SessionCtx, file: &'scx SourceFile) -> Self {
 		let mut parser = Self {
 			scx,
 
-			lexer: Lexer::new(scx, content),
+			lexer: Lexer::new(scx, &file.content, file.offset),
 
 			token: Token::DUMMY,
 			last_token: Token::DUMMY,
+
+			next_node_id: 0,
 		};
 
 		// init the first token
@@ -62,13 +66,15 @@ impl Parser<'_> {
 		}
 	}
 
-	#[track_caller]
 	fn expect(&mut self, token: TokenKind) -> PResult<Token> {
 		if self.check(token) {
 			self.bump();
 			Ok(self.token)
 		} else {
-			Err(format!("expected kind {token:?}, got {:?}", self.token).into())
+			Err(Diagnostic::new_err(
+				format!("expected kind {token:?}, got {:?}", self.token),
+				self.token.span,
+			))
 		}
 	}
 
@@ -79,8 +85,12 @@ impl Parser<'_> {
 	}
 
 	fn expect_ident(&mut self) -> PResult<Ident> {
-		self.eat_ident()
-			.ok_or_else(|| format!("expected an ident, got {:?}", self.token).into())
+		self.eat_ident().ok_or_else(|| {
+			Diagnostic::new_err(
+				format!("expected an ident, got {:?}", self.token),
+				self.token.span,
+			)
+		})
 	}
 
 	fn parse_seq<T>(
@@ -107,6 +117,12 @@ impl Parser<'_> {
 	fn look_ahead(&self) -> TokenKind {
 		self.lexer.clone().next().map_or(Eof, |tkn| tkn.kind)
 	}
+
+	const fn make_node_id(&mut self) -> NodeId {
+		let node_id = NodeId(self.next_node_id);
+		self.next_node_id = self.next_node_id.checked_add(1).unwrap();
+		node_id
+	}
 }
 
 /// Expressions
@@ -132,6 +148,7 @@ impl Parser<'_> {
 					right: Box::new(rhs),
 				},
 				span: lo.to(self.last_token.span),
+				id: self.make_node_id(),
 			};
 		}
 		Ok(lhs)
@@ -149,6 +166,7 @@ impl Parser<'_> {
 				Expr {
 					kind: ExprKind::Literal(Integer, symbol),
 					span: self.last_token.span,
+					id: self.make_node_id(),
 				}
 			}
 			Keyword(If) => self.parse_if_expr()?,
@@ -183,6 +201,7 @@ impl Parser<'_> {
 		Ok(Expr {
 			kind: ExprKind::Variable(ident),
 			span: ident.span,
+			id: self.make_node_id(),
 		})
 	}
 
@@ -206,6 +225,7 @@ impl Parser<'_> {
 		Ok(Expr {
 			kind: expr_kind,
 			span: lo.to(self.last_token.span),
+			id: self.make_node_id(),
 		})
 	}
 }
@@ -225,12 +245,23 @@ impl Parser<'_> {
 		let kind = match self.token.kind {
 			Keyword(Fn) => self.parse_fn()?,
 			Keyword(Extern) => self.parse_extern_fn()?,
-			Eof => return Err("no expression entered".into()),
-			_ => return Err("could not parse item".into()),
+			Eof => {
+				return Err(Diagnostic::new_err(
+					"no expression entered".into(),
+					self.token.span,
+				));
+			}
+			_ => {
+				return Err(Diagnostic::new_err(
+					"could not parse item".into(),
+					self.token.span,
+				));
+			}
 		};
 		Ok(Item {
 			kind,
 			span: lo.to(self.last_token.span),
+			id: self.make_node_id(),
 		})
 	}
 
@@ -285,6 +316,7 @@ impl Parser<'_> {
 		Ok(Expr {
 			kind: expr_kind,
 			span: lo.to(self.last_token.span),
+			id: self.make_node_id(),
 		})
 	}
 }
@@ -350,7 +382,12 @@ impl Parser<'_> {
 			TokenKind::Ident(_) if self.look_ahead() == Colon => self.parse_let_stmt()?,
 			TokenKind::Ident(_) if self.look_ahead() == Eq => self.parse_assign_stmt()?,
 
-			Eof => return Err("expected more input".into()),
+			Eof => {
+				return Err(Diagnostic::new_err(
+					"expected more input".into(),
+					self.token.span,
+				));
+			}
 			_ => {
 				let expr = Box::new(self.parse_expr()?);
 				if self.eat(Semi) {
@@ -363,6 +400,7 @@ impl Parser<'_> {
 		Ok(Stmt {
 			kind,
 			span: lo.to(self.last_token.span),
+			id: self.make_node_id(),
 		})
 	}
 
@@ -429,6 +467,7 @@ impl Parser<'_> {
 		Ok(Block {
 			stmts,
 			span: lo.to(self.last_token.span),
+			id: self.make_node_id(),
 		})
 	}
 }

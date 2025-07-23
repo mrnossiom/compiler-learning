@@ -7,6 +7,7 @@ pub mod codegen;
 pub mod lexer;
 pub mod lowerer;
 pub mod parser;
+pub mod resolve;
 pub mod session;
 pub mod ty;
 

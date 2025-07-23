@@ -1,0 +1,16 @@
+fn fibo(n: uint) uint {
+	a := 0;
+	// b := 0;
+
+	// i := n;
+	// while n != 0 {
+	// 	next := a + b;
+	// 	a = b;
+	// 	b = next;
+
+	// 	n = n - 1;
+	// }
+
+	a
+}
+

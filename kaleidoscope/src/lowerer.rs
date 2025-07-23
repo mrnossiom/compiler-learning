@@ -1,13 +1,16 @@
 //! AST to HIR lowering logic
 
+use std::sync::atomic::AtomicU32;
+
 use bumpalo::Bump;
 
 use crate::{
-	ast,
-	hir::{Block, Expr, ExprKind, FnDecl, Item, ItemKind, Root, Stmt, StmtKind},
+	ast::{self, Spanned},
+	hir::{Block, Expr, ExprKind, FnDecl, Item, ItemKind, NodeId, Root, Stmt, StmtKind},
+	lexer,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LowerCtx {
 	pub arena: Bump,
 }
@@ -15,7 +18,7 @@ pub struct LowerCtx {
 impl LowerCtx {
 	#[must_use]
 	pub fn new() -> Self {
-		Self { arena: Bump::new() }
+		Self::default()
 	}
 }
 
@@ -29,11 +32,33 @@ impl LowerCtx {
 #[derive(Debug)]
 pub struct Lowerer<'lcx> {
 	tcx: &'lcx LowerCtx,
+
+	next_node_id: AtomicU32,
 }
 
 impl<'lcx> Lowerer<'lcx> {
 	pub const fn new(tcx: &'lcx LowerCtx) -> Self {
-		Self { tcx }
+		Self {
+			tcx,
+			next_node_id: AtomicU32::new(0),
+		}
+	}
+
+	fn make_node_id(&self, aid: ast::NodeId) -> NodeId {
+		// TODO: store hid provenance
+		let _ = aid;
+
+		let hid = self
+			.next_node_id
+			.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		NodeId(hid)
+	}
+
+	fn make_new_node_id(&self) -> NodeId {
+		let hid = self
+			.next_node_id
+			.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		NodeId(hid)
 	}
 
 	fn alloc<T>(&self, t: T) -> &'lcx T {
@@ -51,7 +76,7 @@ impl<'lcx> Lowerer<'lcx> {
 	fn mk_expr_block(&self, expr: &'lcx Expr<'lcx>) -> Block<'lcx> {
 		Block {
 			stmts: self.alloc([]),
-			ret_expr: Some(expr),
+			ret: Some(expr),
 		}
 	}
 }
@@ -81,6 +106,7 @@ impl<'lcx> Lowerer<'lcx> {
 		Item {
 			kind,
 			span: item.span,
+			id: self.make_node_id(item.id),
 		}
 	}
 
@@ -100,7 +126,7 @@ impl<'lcx> Lowerer<'lcx> {
 
 	fn lower_block(&self, body: &'lcx ast::Block) -> Block<'lcx> {
 		let mut stmts = Vec::new();
-		let mut ret_expr = None;
+		let mut ret = None;
 
 		let mut ast_stmts = &body.stmts[..];
 		while let [stmt, tail @ ..] = ast_stmts {
@@ -136,7 +162,7 @@ impl<'lcx> Lowerer<'lcx> {
 				ast::StmtKind::ExprRet(expr) => {
 					let expr = self.alloc(self.lower_expr(expr));
 					if tail.is_empty() {
-						ret_expr = Some(expr);
+						ret = Some(expr);
 						continue;
 					}
 					todo!("accept otherwise? or error?, {stmt:?} and {tail:?}")
@@ -148,12 +174,13 @@ impl<'lcx> Lowerer<'lcx> {
 			stmts.push(Stmt {
 				kind,
 				span: stmt.span,
+				id: self.make_node_id(stmt.id),
 			});
 		}
 
 		Block {
 			stmts: self.alloc(stmts),
-			ret_expr,
+			ret,
 		}
 	}
 
@@ -165,11 +192,13 @@ impl<'lcx> Lowerer<'lcx> {
 			altern: Some(self.alloc(self.mk_expr_block(self.alloc(Expr {
 				kind: ExprKind::Break(None),
 				span: body.span,
+				id: self.make_new_node_id(),
 			})))),
 		};
 		let loop_blk = self.mk_expr_block(self.alloc(Expr {
 			kind: if_expr,
 			span: body.span,
+			id: self.make_new_node_id(),
 		}));
 		StmtKind::Loop {
 			block: self.alloc(loop_blk),
@@ -180,11 +209,7 @@ impl<'lcx> Lowerer<'lcx> {
 		let kind = match &expr.kind {
 			ast::ExprKind::Variable(ident) => ExprKind::Variable(*ident),
 			ast::ExprKind::Literal(lit, ident) => ExprKind::Literal(*lit, *ident),
-			ast::ExprKind::Binary { op, left, right } => ExprKind::Binary(
-				*op,
-				self.alloc(self.lower_expr(left)),
-				self.alloc(self.lower_expr(right)),
-			),
+			ast::ExprKind::Binary { op, left, right } => self.lower_binary(op, left, right),
 			ast::ExprKind::FnCall { expr, args } => {
 				let args = self.alloc_iter(args.iter().map(|e| self.lower_expr(e)));
 				ExprKind::FnCall {
@@ -206,6 +231,23 @@ impl<'lcx> Lowerer<'lcx> {
 		Expr {
 			kind,
 			span: expr.span,
+			id: self.make_node_id(expr.id),
 		}
+	}
+
+	fn lower_binary(
+		&self,
+		op: &'lcx Spanned<lexer::BinOp>,
+		left: &'lcx ast::Expr,
+		right: &'lcx ast::Expr,
+	) -> ExprKind<'lcx> {
+		// TODO: lower to core functions
+		// e.g. ExprKind::FnCall { expr: to_core_func(op), args: vec![left, right] }
+
+		ExprKind::Binary(
+			*op,
+			self.alloc(self.lower_expr(left)),
+			self.alloc(self.lower_expr(right)),
+		)
 	}
 }

@@ -1,10 +1,9 @@
 //! Source code to tokens lexing logic
 
-use core::fmt;
-use std::{cmp, str::Chars};
+use std::str::Chars;
 
 use crate::ast::Ident;
-use crate::session::{SessionCtx, Symbol};
+use crate::session::{SessionCtx, Span, Symbol};
 
 #[allow(clippy::enum_glob_use)]
 use self::{BinOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*};
@@ -13,51 +12,6 @@ use self::{BinOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*};
 pub enum Spacing {
 	Alone,
 	Joint,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Span {
-	pub start: u32,
-	pub end: u32,
-}
-
-impl Span {
-	const DUMMY: Self = Self::new(u32::MAX, u32::MAX);
-
-	#[must_use]
-	pub const fn new(start: u32, end: u32) -> Self {
-		Self { start, end }
-	}
-
-	#[must_use]
-	pub fn to(self, span: Self) -> Self {
-		Self {
-			start: cmp::min(self.start, span.start),
-			end: cmp::max(self.end, span.end),
-		}
-	}
-
-	#[must_use]
-	pub const fn start(self) -> Self {
-		Self {
-			start: self.start,
-			end: self.start,
-		}
-	}
-
-	#[must_use]
-	pub const fn end(self) -> Self {
-		Self {
-			start: self.end,
-			end: self.end,
-		}
-	}
-}
-
-impl fmt::Debug for Span {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "s#{}..{}", self.start, self.end)
-	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,14 +165,14 @@ pub struct Lexer<'scx, 'src> {
 
 impl<'scx, 'src> Lexer<'scx, 'src> {
 	#[must_use]
-	pub fn new(scx: &'scx SessionCtx, source: &'src str) -> Self {
+	pub fn new(scx: &'scx SessionCtx, source: &'src str, offset: u32) -> Self {
 		let chars = source.chars();
 		Self {
 			scx,
 			source,
 			chars,
 			token: None,
-			offset: 0,
+			offset: usize::try_from(offset).unwrap(),
 
 			next_glued: None,
 		}

@@ -3,9 +3,19 @@
 use std::fmt;
 
 use crate::{
-	lexer::{BinOp, LiteralKind, Span},
-	session::Symbol,
+	lexer::{BinOp, LiteralKind},
+	session::{Span, Symbol},
 };
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId(pub u32);
+
+impl fmt::Debug for NodeId {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		// ast node id -> aid
+		write!(f, "aid#{}", self.0)
+	}
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Ident {
@@ -42,6 +52,7 @@ impl<T> Spanned<T> {
 pub struct Expr {
 	pub kind: ExprKind,
 	pub span: Span,
+	pub id: NodeId,
 }
 
 #[derive(Debug)]
@@ -71,6 +82,7 @@ pub enum ExprKind {
 pub struct Block {
 	pub stmts: Vec<Stmt>,
 	pub span: Span,
+	pub id: NodeId,
 }
 
 #[derive(Debug)]
@@ -93,6 +105,7 @@ pub enum TyKind {
 
 	Unit,
 
+	/// Corresponds to the explicit `_` token
 	Infer,
 }
 
@@ -100,6 +113,7 @@ pub enum TyKind {
 pub struct Item {
 	pub kind: ItemKind,
 	pub span: Span,
+	pub id: NodeId,
 }
 
 #[derive(Debug)]
@@ -119,6 +133,7 @@ pub enum ItemKind {
 pub struct Stmt {
 	pub kind: StmtKind,
 	pub span: Span,
+	pub id: NodeId,
 }
 
 #[derive(Debug)]

@@ -1,16 +1,19 @@
-fn fibo(n: uint) uint {
-	a := 0;
-	// b := 0;
+extern fn putchard(c: uint);
 
-	// i := n;
-	// while n != 0 {
-	// 	next := a + b;
-	// 	a = b;
-	// 	b = next;
-
-	// 	n = n - 1;
-	// }
-
-	a
+fn fibo(n: uint) {
+	putchard(72);
+	putchard(101);
+	putchard(108);
+	putchard(108);
+	putchard(111);
+	putchard(44);
+	putchard(32);
+	putchard(87);
+	putchard(111);
+	putchard(114);
+	putchard(108);
+	putchard(100);
+	putchard(33);
+	putchard(10);
 }
 

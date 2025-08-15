@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+	collections::HashMap,
+	sync::atomic::{AtomicU32, Ordering},
+};
 
 use crate::{
 	ast, hir, lexer,
@@ -10,12 +13,17 @@ use crate::{
 #[derive(Debug)]
 pub struct TyCtx<'scx> {
 	scx: &'scx SessionCtx,
+
+	infer_tag_count: AtomicU32,
 }
 
 impl<'scx> TyCtx<'scx> {
 	#[must_use]
-	pub const fn new(scx: &'scx SessionCtx) -> Self {
-		Self { scx }
+	pub fn new(scx: &'scx SessionCtx) -> Self {
+		Self {
+			scx,
+			infer_tag_count: AtomicU32::default(),
+		}
 	}
 }
 
@@ -30,19 +38,20 @@ impl TyCtx<'_> {
 	) -> tbir::Block {
 		let mut inferer = Inferer::new(self, decl, body, &env.values);
 		inferer.infer_fn();
-
-		tracing::debug!(expr_type = ?inferer.expr_type);
-
 		inferer.build_body()
 	}
 }
 
 impl TyCtx<'_> {
+	fn next_infer_tag(&self) -> InferTag {
+		InferTag(self.infer_tag_count.fetch_add(1, Ordering::Relaxed))
+	}
+
 	fn lower_ty(&self, ty: &ast::Ty) -> TyKind<Infer> {
 		match &ty.kind {
 			ast::TyKind::Path(path, _generics) => self.lower_path_ty(path[0]),
 			ast::TyKind::Unit => TyKind::Unit,
-			ast::TyKind::Infer => TyKind::Infer(Infer::Explicit),
+			ast::TyKind::Infer => TyKind::Infer(self.next_infer_tag(), Infer::Explicit),
 		}
 	}
 
@@ -82,7 +91,8 @@ pub struct Inferer<'tcx> {
 	body: &'tcx hir::Block<'tcx>,
 
 	local_env: HashMap<Symbol, Vec<TyKind<Infer>>>,
-	expr_type: HashMap<hir::NodeId, TyKind>,
+	expr_type: HashMap<hir::NodeId, TyKind<Infer>>,
+	infer_map: HashMap<InferTag, TyKind<Infer>>,
 }
 
 impl<'tcx> Inferer<'tcx> {
@@ -102,6 +112,8 @@ impl<'tcx> Inferer<'tcx> {
 
 			local_env: HashMap::default(),
 			expr_type: HashMap::default(),
+
+			infer_map: HashMap::default(),
 		}
 	}
 }
@@ -176,8 +188,10 @@ impl Inferer<'_> {
 				.cloned()
 				.unwrap_or_else(|| panic!("unknown variable {:?}", ident.name)),
 			hir::ExprKind::Literal(lit, _ident) => match lit {
-				lexer::LiteralKind::Integer => TyKind::Infer(Infer::Integer),
-				lexer::LiteralKind::Float => TyKind::Infer(Infer::Float),
+				lexer::LiteralKind::Integer => {
+					TyKind::Infer(self.tcx.next_infer_tag(), Infer::Integer)
+				}
+				lexer::LiteralKind::Float => TyKind::Infer(self.tcx.next_infer_tag(), Infer::Float),
 				lexer::LiteralKind::Str => TyKind::Str,
 			},
 			hir::ExprKind::Binary(op, left, right) => {
@@ -210,11 +224,7 @@ impl Inferer<'_> {
 				for (Param(_, expected), actual) in fn_.inputs.iter().zip(args.iter()) {
 					let actual_ty = self.infer_expr(actual);
 					self.unify(&expected.clone().as_infer(), &actual_ty);
-
-					assert!(self.expr_type.insert(actual.id, expected.clone()).is_none());
 				}
-
-				assert!(self.expr_type.insert(expr.id, fn_.output.clone()).is_none());
 
 				fn_.output.as_infer()
 			}
@@ -238,10 +248,8 @@ impl Inferer<'_> {
 			hir::ExprKind::Break(_) | hir::ExprKind::Continue => TyKind::Never,
 		};
 
-		// TODO: check
-		if let Some(ty_noinf) = ty.clone().as_no_infer() {
-			assert!(self.expr_type.insert(expr.id, ty_noinf).is_none());
-		}
+		// TODO
+		assert!(self.expr_type.insert(expr.id, ty.clone()).is_none());
 
 		ty
 	}
@@ -249,10 +257,11 @@ impl Inferer<'_> {
 
 /// Unification
 impl Inferer<'_> {
-	#[tracing::instrument(skip(self), ret)]
-	fn unify(&self, expected: &TyKind<Infer>, actual: &TyKind<Infer>) -> TyKind<Infer> {
+	fn unify(&mut self, expected: &TyKind<Infer>, actual: &TyKind<Infer>) -> TyKind<Infer> {
 		match (expected, actual) {
-			(TyKind::Infer(infer), ty) | (ty, TyKind::Infer(infer)) => self.unify_infer(infer, ty),
+			(TyKind::Infer(tag, infer), ty) | (ty, TyKind::Infer(tag, infer)) => {
+				self.unify_infer(*tag, *infer, ty)
+			}
 			// infer and never have different meaning but both coerces to anything
 			(TyKind::Never, ty) | (ty, TyKind::Never) => ty.clone(),
 
@@ -261,15 +270,15 @@ impl Inferer<'_> {
 		}
 	}
 
-	fn unify_infer(&self, infer: &Infer, other: &TyKind<Infer>) -> TyKind<Infer> {
-		match (infer, other) {
+	fn unify_infer(&mut self, tag: InferTag, infer: Infer, other: &TyKind<Infer>) -> TyKind<Infer> {
+		let unified = match (infer, other) {
 			(Infer::Integer, TyKind::Integer) => TyKind::Integer,
 			(Infer::Float, TyKind::Float) => TyKind::Float,
 			(Infer::Generic | Infer::Explicit, ty) => ty.clone(),
 
-			(_, TyKind::Infer(actual_infer)) => {
-				if infer == actual_infer {
-					TyKind::Infer(infer.clone())
+			(_, TyKind::Infer(tag, actual_infer)) => {
+				if infer == *actual_infer {
+					TyKind::Infer(*tag, *actual_infer)
 				} else {
 					panic!(
 						"infer kind mismatch: expected infer {{{infer:?}}}, recieved infer {{{actual_infer:?}}}"
@@ -278,6 +287,24 @@ impl Inferer<'_> {
 			}
 			(_, ty) => {
 				panic!("infer kind mismatch: expected infer {{{infer:?}}}, recieved ty {ty:?}")
+			}
+		};
+
+		self.infer_map.insert(tag, unified.clone());
+
+		unified
+	}
+
+	fn resolve_ty(&self, id: hir::NodeId) -> TyKind {
+		let mut tag = match self.expr_type.get(&id).cloned().unwrap().as_no_infer() {
+			Ok(ty) => return ty,
+			Err((tag, _)) => tag,
+		};
+
+		loop {
+			match self.infer_map.get(&tag).cloned().unwrap().as_no_infer() {
+				Ok(ty) => return ty,
+				Err((new_tag, _)) => tag = new_tag,
 			}
 		}
 	}
@@ -304,13 +331,16 @@ pub enum TyKind<InferKind = NoInfer> {
 
 	Fn(Box<FnDecl>),
 
-	Infer(InferKind),
+	Infer(InferTag, InferKind),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InferTag(u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoInfer {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Infer {
 	Integer,
 	Float,
@@ -336,16 +366,16 @@ impl TyKind<NoInfer> {
 
 impl TyKind<Infer> {
 	#[must_use]
-	pub fn as_no_infer(self) -> Option<TyKind<NoInfer>> {
+	pub fn as_no_infer(self) -> Result<TyKind<NoInfer>, (InferTag, Infer)> {
 		match self {
-			Self::Unit => Some(TyKind::Unit),
-			Self::Never => Some(TyKind::Never),
-			Self::Bool => Some(TyKind::Bool),
-			Self::Integer => Some(TyKind::Integer),
-			Self::Float => Some(TyKind::Float),
-			Self::Str => Some(TyKind::Str),
-			Self::Fn(fn_) => Some(TyKind::Fn(fn_)),
-			Self::Infer(_) => None,
+			Self::Unit => Ok(TyKind::Unit),
+			Self::Never => Ok(TyKind::Never),
+			Self::Bool => Ok(TyKind::Bool),
+			Self::Integer => Ok(TyKind::Integer),
+			Self::Float => Ok(TyKind::Float),
+			Self::Str => Ok(TyKind::Str),
+			Self::Fn(fn_) => Ok(TyKind::Fn(fn_)),
+			Self::Infer(tag, infer) => Err((tag, infer)),
 		}
 	}
 }
@@ -416,10 +446,9 @@ impl Inferer<'_> {
 			hir::ExprKind::Continue => tbir::ExprKind::Continue,
 		};
 
-		tracing::debug!(?expr);
 		tbir::Expr {
 			kind,
-			ty: self.expr_type.get(&expr.id).unwrap().clone(),
+			ty: self.resolve_ty(expr.id),
 			span: expr.span,
 			id: expr.id,
 		}

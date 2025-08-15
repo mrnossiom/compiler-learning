@@ -30,7 +30,10 @@ impl<'scx> Generator<'scx> {
 			.unwrap()
 			.finish(settings::Flags::new(flag_builder))
 			.unwrap();
-		let builder = JITBuilder::with_isa(isa, default_libcall_names());
+
+		let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+
+		builder.symbol("putchard", crate::ffi::putchard as *const u8);
 
 		Self {
 			scx,
@@ -40,19 +43,18 @@ impl<'scx> Generator<'scx> {
 			variable_generator: VariableGenerator::default(),
 		}
 	}
+}
 
-	fn to_abi_ty(&self, output: &ty::TyKind) -> AbiParam {
-		let ty = match &output {
-			ty::TyKind::Unit => types::I8, // TODO: unit is zst
-			ty::TyKind::Never => todo!(),
-			ty::TyKind::Bool => types::I8,
-			ty::TyKind::Integer => types::I32,
-			ty::TyKind::Float => types::F32,
-			ty::TyKind::Str => todo!(),
-			ty::TyKind::Fn(fn_decl) => types::I32,
-			ty::TyKind::Infer(_) => unreachable!(),
-		};
-		AbiParam::new(ty)
+fn to_cl_type(output: &ty::TyKind) -> Type {
+	match &output {
+		ty::TyKind::Unit => types::I8, // TODO: unit is zst
+		ty::TyKind::Never => todo!(),
+		ty::TyKind::Bool => types::I8,
+		ty::TyKind::Integer => types::I32,
+		ty::TyKind::Float => types::F32,
+		ty::TyKind::Str => todo!(),
+		ty::TyKind::Fn(fn_decl) => todo!(),
+		ty::TyKind::Infer(_, _) => unreachable!(),
 	}
 }
 
@@ -67,9 +69,11 @@ impl Generator<'_> {
 			None => {
 				let mut signature = self.module.make_signature();
 				for ty::Param(_name, ty) in &decl.inputs {
-					signature.params.push(self.to_abi_ty(ty));
+					signature.params.push(AbiParam::new(to_cl_type(ty)));
 				}
-				signature.returns.push(self.to_abi_ty(&decl.output));
+				signature
+					.returns
+					.push(AbiParam::new(to_cl_type(&decl.output)));
 
 				let func_name = self.scx.symbols.resolve(name);
 				let func_id = self
@@ -110,9 +114,11 @@ impl CodeGen for Generator<'_> {
 
 		let signature = &mut context.func.signature;
 		for ty::Param(_name, ty) in &decl.inputs {
-			signature.params.push(self.to_abi_ty(ty));
+			signature.params.push(AbiParam::new(to_cl_type(ty)));
 		}
-		signature.returns.push(self.to_abi_ty(&decl.output));
+		signature
+			.returns
+			.push(AbiParam::new(to_cl_type(&decl.output)));
 
 		let func_id = self.declare_func(name, decl, Linkage::Export)?;
 
@@ -124,9 +130,11 @@ impl CodeGen for Generator<'_> {
 		builder.seal_block(entry_block);
 
 		let mut values = HashMap::new();
-		for (i, ty::Param(argument, _ty)) in decl.inputs.iter().enumerate() {
+		for (i, ty::Param(argument, ty)) in decl.inputs.iter().enumerate() {
 			let value = builder.block_params(entry_block)[i];
-			let variable = self.variable_generator.create_var(&mut builder, value);
+			let variable = self
+				.variable_generator
+				.create_var(&mut builder, value, to_cl_type(ty));
 			values.insert(argument.name, variable);
 		}
 
@@ -162,8 +170,8 @@ impl CodeGen for Generator<'_> {
 
 		self.module.define_function(func_id, &mut context).unwrap();
 		self.module.clear_context(&mut context);
-		self.module.finalize_definitions().unwrap();
 
+		self.module.finalize_definitions().unwrap();
 		let fn_ = self.module.get_finalized_function(func_id);
 
 		#[allow(unsafe_code)]
@@ -184,10 +192,10 @@ struct VariableGenerator {
 }
 
 impl VariableGenerator {
-	fn create_var(&mut self, builder: &mut FunctionBuilder, value: Value) -> Variable {
+	fn create_var(&mut self, builder: &mut FunctionBuilder, value: Value, ty: Type) -> Variable {
 		let variable = Variable::new(self.index);
 		self.index += 1;
-		builder.declare_var(variable, types::I64);
+		builder.declare_var(variable, ty);
 		builder.def_var(variable, value);
 		variable
 	}
@@ -218,7 +226,8 @@ impl FunctionGenerator<'_, '_> {
 		if let Some(expr) = &block.ret {
 			self.codegen_expr(expr)
 		} else {
-			todo!()
+			// TODO: should return a zst
+			Ok(self.builder.ins().iconst(types::I8, 0))
 		}
 	}
 
@@ -230,9 +239,11 @@ impl FunctionGenerator<'_, '_> {
 			}
 			tbir::StmtKind::Let { ident, value, .. } => {
 				let expr_value = self.codegen_expr(value)?;
-				let value = self
-					.variable_generator
-					.create_var(&mut self.builder, expr_value);
+				let value = self.variable_generator.create_var(
+					&mut self.builder,
+					expr_value,
+					to_cl_type(&value.ty),
+				);
 				self.values.insert(ident.name, value);
 				Ok(())
 			}
@@ -262,7 +273,7 @@ impl FunctionGenerator<'_, '_> {
 					lexer::LiteralKind::Integer => self
 						.builder
 						.ins()
-						.iconst(types::I64, sym.parse::<i64>().unwrap()),
+						.iconst(to_cl_type(&expr.ty), sym.parse::<i64>().unwrap()),
 					lexer::LiteralKind::Float => {
 						self.builder.ins().f64const(sym.parse::<f64>().unwrap())
 					}

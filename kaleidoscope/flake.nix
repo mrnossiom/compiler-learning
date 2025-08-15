@@ -51,8 +51,9 @@
             LD_LIBRARY_PATH = makeLibraryPath buildInputs;
 
             LLVM_SYS_181_PREFIX = pkgs.llvmPackages_18.llvm.dev;
-            RUST_LOG = "debug";
+
             RUST_BACKTRACE = "1";
+            RUST_LOG = "kaleidoscope=debug,info";
           };
         });
     };

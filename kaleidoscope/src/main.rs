@@ -58,7 +58,7 @@ fn pipeline(args: &Args, source: &str) {
 	}
 
 	// type collection, inference and analysis
-	let mut tcx = ty::TyCtx::new(&scx);
+	let tcx = ty::TyCtx::new(&scx);
 
 	let mut cltr = resolve::Collector::new(&tcx);
 	cltr.collect_hir(&hir);

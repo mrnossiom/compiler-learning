@@ -41,8 +41,8 @@ pub struct Expr {
 
 #[derive(Debug)]
 pub enum ExprKind {
-	Variable(ast::Ident),
 	Literal(LiteralKind, Symbol),
+	Variable(ast::Ident),
 
 	Binary(Spanned<BinOp>, Box<Expr>, Box<Expr>),
 

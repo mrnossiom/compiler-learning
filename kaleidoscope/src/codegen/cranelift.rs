@@ -175,7 +175,7 @@ impl CodeGen for Generator<'_> {
 		let fn_ = self.module.get_finalized_function(func_id);
 
 		#[allow(unsafe_code)]
-		// TODO: this is unsafe as some functions ask for arguments
+		// TODO: this is unsafe as some functions ask for arguments, and lot a more reasons
 		let fn_ = unsafe { mem::transmute::<*const u8, fn() -> i64>(fn_) };
 
 		Ok(fn_)

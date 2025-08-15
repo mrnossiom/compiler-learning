@@ -1,6 +1,6 @@
 extern fn putchard(c: uint);
 
-fn fibo(n: uint) {
+fn hello_world() {
 	putchard(72);
 	putchard(101);
 	putchard(108);
@@ -17,3 +17,6 @@ fn fibo(n: uint) {
 	putchard(10);
 }
 
+fn main() {
+	hello_world();
+}

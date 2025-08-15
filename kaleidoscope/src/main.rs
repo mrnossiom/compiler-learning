@@ -67,13 +67,14 @@ fn pipeline(args: &Args, source: &str) {
 
 	// codegen TBIR bodies
 	#[cfg(feature = "llvm")]
-	let context = Context::create();
+	let context = inkwell::context::Context::create();
 	let mut generator = codegen::Generator::new(
 		&scx,
 		#[cfg(feature = "llvm")]
 		&context,
 	);
 
+	let mut main = None;
 	for item in hir.items {
 		match item.kind {
 			hir::ItemKind::Extern { ident, decl } => {
@@ -87,10 +88,15 @@ fn pipeline(args: &Args, source: &str) {
 
 				let body = tcx.typeck_fn(&decl, body, &cltr.environment);
 				let fn_ = generator.function(ident.name, &decl, &body).unwrap();
-				tracing::debug!(fn_ret = generator.call_fn(fn_).unwrap());
+
+				if scx.symbols.resolve(ident.name) == "main" {
+					main = Some(fn_);
+				}
 			}
 		}
 	}
+
+	tracing::debug!(fn_ret = generator.call_fn(main.expect("no main func")).unwrap());
 
 	tracing::info!("Reached pipeline end sucessfully!");
 }

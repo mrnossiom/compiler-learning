@@ -12,29 +12,36 @@ use inkwell::{
 };
 
 use crate::{
-	Ident, Result,
-	lexer::Operator,
-	parser::{Expr, Function, Prototype},
+	Result,
+	ast::Spanned,
+	lexer::{BinOp, LiteralKind},
+	session::{SessionCtx, Symbol},
+	tbir::{self, Expr, ExprKind},
+	ty::{self, FnDecl},
 };
 
 use super::CodeGen;
 
-pub struct Generator<'ctx> {
+pub struct Generator<'scx, 'ctx> {
+	scx: &'scx SessionCtx,
+
 	ctx: &'ctx Context,
 	builder: Builder<'ctx>,
 	module: Module<'ctx>,
 	jit: ExecutionEngine<'ctx>,
 
-	variables: HashMap<Ident, PointerValue<'ctx>>,
+	variables: HashMap<Symbol, PointerValue<'ctx>>,
 }
 
-impl<'ctx> Generator<'ctx> {
-	pub fn new(ctx: &'ctx Context) -> Self {
+impl<'scx, 'ctx> Generator<'scx, 'ctx> {
+	pub fn new(scx: &'scx SessionCtx, ctx: &'ctx Context) -> Self {
 		let module = ctx.create_module("repl");
 		let jit = module
 			.create_jit_execution_engine(OptimizationLevel::None)
 			.unwrap();
 		Self {
+			scx,
+
 			ctx,
 			builder: ctx.create_builder(),
 			module,
@@ -45,225 +52,24 @@ impl<'ctx> Generator<'ctx> {
 	}
 }
 
-impl<'ctx> Generator<'ctx> {
-	fn compile_bin_expr<'a>(
-		&'a self,
-		op: Operator,
-		left: IntValue<'ctx>,
-		right: IntValue<'ctx>,
-	) -> Result<IntValue<'ctx>> {
-		let ins = match op {
-			Operator::Plus => self.builder.build_int_add(left, right, "").unwrap(),
-			Operator::Minus => self.builder.build_int_sub(left, right, "").unwrap(),
-			Operator::Mul => self.builder.build_int_mul(left, right, "").unwrap(),
-			Operator::Div => self
-				.builder
-				.build_int_unsigned_div(left, right, "")
-				.unwrap(),
-
-			Operator::Gt => self
-				.builder
-				.build_int_compare(IntPredicate::SGT, left, right, "")
-				.unwrap(),
-			Operator::Lt => self
-				.builder
-				.build_int_compare(IntPredicate::SLT, left, right, "")
-				.unwrap(),
-			Operator::Eq => self
-				.builder
-				.build_int_compare(IntPredicate::EQ, left, right, "")
-				.unwrap(),
-		};
-		Ok(ins)
-	}
-
-	fn expr(&mut self, expr: &Expr) -> Result<IntValue<'ctx>> {
-		let value = match expr {
-			Expr::Literal(num) => self.ctx.i64_type().const_int(num.value as u64, true),
-			Expr::Ident(ident) => {
-				let var = self.variables.get(ident).unwrap();
-
-				self.builder
-					.build_load(self.ctx.i64_type(), *var, &ident.0)
-					.unwrap()
-					.into_int_value()
-			}
-			Expr::Binary { op, left, right } => {
-				let left = self.expr(left)?;
-				let right = self.expr(right)?;
-
-				self.compile_bin_expr(*op, left, right)?
-			}
-			Expr::FnCall { ident, args } => {
-				let func = self.module.get_function(&ident.0).unwrap();
-				if args.len() != func.count_params() as usize {
-					return Err("fn call args count mismatch");
-				}
-
-				let args = args
-					.iter()
-					.map(|arg| self.expr(arg).map(Into::into))
-					.collect::<Result<Vec<_>>>()?;
-
-				let call = self.builder.build_call(func, &args, "call").unwrap();
-				let value = call.try_as_basic_value().left().unwrap();
-				value.into_int_value()
-			}
-			Expr::If {
-				condition,
-				consequence,
-				alternative,
-			} => {
-				let condition = self.expr(condition)?;
-				let condition = self
-					.builder
-					.build_int_compare(
-						IntPredicate::NE,
-						condition,
-						self.ctx.bool_type().const_int(0, false),
-						"",
-					)
-					.unwrap();
-
-				let func = self
-					.builder
-					.get_insert_block()
-					.unwrap()
-					.get_parent()
-					.unwrap();
-
-				let then_bb = self.ctx.append_basic_block(func, "then");
-				let else_bb = self.ctx.append_basic_block(func, "else");
-				let merge_bb = self.ctx.append_basic_block(func, "merge");
-
-				self.builder
-					.build_conditional_branch(condition, then_bb, else_bb)
-					.unwrap();
-
-				self.builder.position_at_end(then_bb);
-				let then_val = self.expr(consequence)?;
-				self.builder.build_unconditional_branch(merge_bb).unwrap();
-				let then_bb = self.builder.get_insert_block().unwrap();
-
-				self.builder.position_at_end(else_bb);
-				let else_val = self.expr(alternative)?;
-				self.builder.build_unconditional_branch(merge_bb).unwrap();
-				let else_bb = self.builder.get_insert_block().unwrap();
-
-				self.builder.position_at_end(merge_bb);
-
-				let phi = self
-					.builder
-					.build_phi(self.ctx.i64_type(), "if_ret")
-					.unwrap();
-				phi.add_incoming(&[(&then_val, then_bb), (&else_val, else_bb)]);
-
-				phi.as_basic_value().into_int_value()
-			}
-			Expr::ForLoop {
-				init_name,
-				init,
-				check,
-				increment,
-				body,
-			} => {
-				let init_val = self.expr(init)?;
-
-				let func = self
-					.builder
-					.get_insert_block()
-					.unwrap()
-					.get_parent()
-					.unwrap();
-
-				let preloop_bb = self.builder.get_insert_block().unwrap();
-				let loop_bb = self.ctx.append_basic_block(func, "loop");
-
-				self.builder.build_unconditional_branch(loop_bb).unwrap();
-
-				self.builder.position_at_end(loop_bb);
-				let index = self
-					.builder
-					.build_phi(self.ctx.i64_type(), "index")
-					.unwrap();
-				index.add_incoming(&[(&init_val, preloop_bb)]);
-				self.variables.insert(
-					init_name.clone(),
-					init_val.const_to_pointer(self.ctx.ptr_type(AddressSpace::default())),
-				);
-
-				self.expr(body)?;
-
-				let step_val = if let Some(val) = increment {
-					self.expr(val)?
-				} else {
-					self.ctx.i64_type().const_int(1, false)
-				};
-				let next_var = self
-					.builder
-					.build_int_add(index.as_basic_value().into_int_value(), step_val, "step")
-					.unwrap();
-
-				let end_cond = self.expr(check)?;
-				let cond = self
-					.builder
-					.build_int_compare(
-						IntPredicate::NE,
-						end_cond,
-						self.ctx.bool_type().const_int(0, false),
-						"end_cond",
-					)
-					.unwrap();
-
-				let loop_end = self.builder.get_insert_block().unwrap();
-				let after_bb = self.ctx.append_basic_block(func, "after_loop");
-
-				self.builder
-					.build_conditional_branch(cond, loop_bb, after_bb)
-					.unwrap();
-
-				self.builder.position_at_end(after_bb);
-				index.add_incoming(&[(&next_var, loop_end)]);
-
-				self.ctx.i64_type().const_int(0, false)
-			}
-		};
-
-		Ok(value)
-	}
-
-	pub fn prototype(&mut self, prototype: &Prototype) -> Result<FunctionValue<'ctx>> {
-		let args_ty = iter::repeat_n(self.ctx.i64_type(), prototype.args.len())
-			.map(Into::into)
-			.collect::<Vec<_>>();
-		let fn_ty = self.ctx.i64_type().fn_type(&args_ty, false);
-
-		let fn_val = self.module.add_function(&prototype.name.0, fn_ty, None);
-
-		// set arguments name
-		fn_val
-			.get_param_iter()
-			.zip(&prototype.args)
-			.for_each(|(arg, parg)| arg.into_int_value().set_name(&parg.0));
-
-		Ok(fn_val)
-	}
-}
-
-impl<'ctx> CodeGen for Generator<'ctx> {
+impl<'ctx> CodeGen for Generator<'_, 'ctx> {
 	type Fn = FunctionValue<'ctx>;
 
-	fn extern_(&mut self, proto: &Prototype) -> Result<()> {
-		self.prototype(proto)?;
+	fn extern_(&mut self, name: Symbol, decl: &FnDecl) -> Result<()> {
+		self.define_func(name, decl)?;
 		Ok(())
 	}
 
-	fn function(&mut self, func: &Function) -> Result<Self::Fn> {
-		if self.module.get_function(&func.proto.name.0).is_some() {
+	fn function(&mut self, name: Symbol, decl: &FnDecl, body: &tbir::Block) -> Result<Self::Fn> {
+		if self
+			.module
+			.get_function(&self.scx.symbols.resolve(name))
+			.is_some()
+		{
 			return Err("cannot redefine extern function");
 		}
 
-		let fn_val = self.prototype(&func.proto)?;
+		let fn_val = self.define_func(name, decl)?;
 
 		let bb = self.ctx.append_basic_block(fn_val, "entry");
 		self.builder.position_at_end(bb);
@@ -271,16 +77,17 @@ impl<'ctx> CodeGen for Generator<'ctx> {
 		self.variables.clear();
 		fn_val
 			.get_param_iter()
-			.zip(&func.proto.args)
-			.for_each(|(arg, parg)| {
+			.zip(&decl.inputs)
+			.for_each(|(arg, ty::Param(ident, ty))| {
 				self.variables.insert(
-					parg.clone(),
+					ident.name,
 					arg.into_int_value()
 						.const_to_pointer(self.ctx.ptr_type(AddressSpace::default())),
 				);
 			});
 
-		let ret_val = self.expr(&func.body)?;
+		let ret_val = self.codegen_block(body)?;
+
 		self.builder.build_return(Some(&ret_val)).unwrap();
 
 		if !fn_val.verify(true) {
@@ -308,7 +115,7 @@ impl<'ctx> CodeGen for Generator<'ctx> {
 	}
 }
 
-impl Generator<'_> {
+impl<'ctx> Generator<'_, 'ctx> {
 	pub fn apply_passes(&self) {
 		Target::initialize_all(&InitializationConfig::default());
 
@@ -341,5 +148,221 @@ impl Generator<'_> {
 				PassBuilderOptions::create(),
 			)
 			.unwrap();
+	}
+
+	pub fn define_func(&mut self, name: Symbol, decl: &FnDecl) -> Result<FunctionValue<'ctx>> {
+		let args_ty = iter::repeat_n(self.ctx.i64_type(), decl.inputs.len())
+			.map(Into::into)
+			.collect::<Vec<_>>();
+		let fn_ty = self.ctx.i64_type().fn_type(&args_ty, false);
+
+		let name = self.scx.symbols.resolve(name);
+		let fn_val = self.module.add_function(&name, fn_ty, None);
+
+		// set arguments name
+		fn_val
+			.get_param_iter()
+			.zip(&decl.inputs)
+			.for_each(|(arg, ty::Param(ident, ty))| {
+				arg.into_int_value()
+					.set_name(&self.scx.symbols.resolve(ident.name));
+			});
+
+		Ok(fn_val)
+	}
+}
+
+impl<'ctx> Generator<'_, 'ctx> {
+	fn codegen_block(&mut self, block: &tbir::Block) -> Result<IntValue<'ctx>> {
+		for stmt in &block.stmts {
+			self.codegen_stmt(stmt)?;
+		}
+
+		if let Some(expr) = &block.ret {
+			self.codegen_expr(expr)
+		} else {
+			// TODO: should return a zst
+			Ok(self.ctx.i64_type().const_int(0, false))
+		}
+	}
+
+	fn codegen_stmt(&mut self, stmt: &tbir::Stmt) -> Result<()> {
+		match &stmt.kind {
+			tbir::StmtKind::Expr(expr) => {
+				self.codegen_expr(expr)?;
+				Ok(())
+			}
+			tbir::StmtKind::Let { ident, value, .. } => {
+				// 	let expr_value = self.codegen_expr(value)?;
+				// 	let value = self.variable_generator.create_var(
+				// 		&mut self.builder,
+				// 		expr_value,
+				// 		to_cl_type(&value.ty),
+				// 	);
+				// 	self.values.insert(ident.name, value);
+				// 	Ok(())
+				todo!()
+			}
+			tbir::StmtKind::Assign { target, value } => {
+				// let variable = *self.values.get(&target.name).unwrap();
+				// let expr_value = self.codegen_expr(value)?;
+				// self.builder.def_var(variable, expr_value);
+
+				// Ok(())
+				todo!()
+			}
+			tbir::StmtKind::Loop { block } => {
+				// let loop_header = self.builder.create_block();
+				// self.builder.switch_to_block(loop_header);
+				// self.codegen_block(block)?;
+				// self.builder.ins().jump(loop_header, &[]);
+				// self.builder.seal_block(loop_header);
+				// Ok(())
+				todo!()
+			}
+		}
+	}
+
+	fn codegen_expr(&mut self, expr: &Expr) -> Result<IntValue<'ctx>> {
+		let value = match &expr.kind {
+			ExprKind::Literal(lit, sym) => {
+				let sym = self.scx.symbols.resolve(*sym);
+				match lit {
+					LiteralKind::Integer => self
+						.ctx
+						.i64_type()
+						.const_int(sym.parse::<u64>().unwrap(), true),
+					LiteralKind::Float => todo!(),
+					LiteralKind::Str => todo!(),
+				}
+			}
+			ExprKind::Variable(ident) => {
+				let var = self.variables.get(&ident.name).unwrap();
+
+				self.builder
+					.build_load(
+						self.ctx.i64_type(),
+						*var,
+						&self.scx.symbols.resolve(ident.name),
+					)
+					.unwrap()
+					.into_int_value()
+			}
+			ExprKind::Binary(op, left, right) => {
+				let left = self.codegen_expr(left)?;
+				let right = self.codegen_expr(right)?;
+
+				self.codegen_bin_op(*op, left, right)?
+			}
+			ExprKind::FnCall { expr, args } => {
+				let tbir::ExprKind::Variable(ident) = expr.kind else {
+					todo!("not a fn")
+				};
+				let func = self
+					.module
+					.get_function(&self.scx.symbols.resolve(ident.name))
+					.unwrap();
+				if args.len() != func.count_params() as usize {
+					return Err("fn call args count mismatch");
+				}
+
+				let args = args
+					.iter()
+					.map(|arg| self.codegen_expr(arg).map(Into::into))
+					.collect::<Result<Vec<_>>>()?;
+
+				let call = self.builder.build_call(func, &args, "call").unwrap();
+				let value = call.try_as_basic_value().left().unwrap();
+				value.into_int_value()
+			}
+			ExprKind::If {
+				cond,
+				conseq,
+				altern,
+			} => {
+				let condition = self.codegen_expr(cond)?;
+				let condition = self
+					.builder
+					.build_int_compare(
+						IntPredicate::NE,
+						condition,
+						self.ctx.bool_type().const_int(0, false),
+						"",
+					)
+					.unwrap();
+
+				let func = self
+					.builder
+					.get_insert_block()
+					.unwrap()
+					.get_parent()
+					.unwrap();
+
+				let then_bb = self.ctx.append_basic_block(func, "then");
+				let else_bb = self.ctx.append_basic_block(func, "else");
+				let merge_bb = self.ctx.append_basic_block(func, "merge");
+
+				self.builder
+					.build_conditional_branch(condition, then_bb, else_bb)
+					.unwrap();
+
+				self.builder.position_at_end(then_bb);
+				let then_val = self.codegen_block(conseq)?;
+				self.builder.build_unconditional_branch(merge_bb).unwrap();
+				let then_bb = self.builder.get_insert_block().unwrap();
+
+				self.builder.position_at_end(else_bb);
+				// TODO
+				let else_val = self.codegen_block(altern.as_ref().unwrap())?;
+				self.builder.build_unconditional_branch(merge_bb).unwrap();
+				let else_bb = self.builder.get_insert_block().unwrap();
+
+				self.builder.position_at_end(merge_bb);
+
+				let phi = self
+					.builder
+					.build_phi(self.ctx.i64_type(), "if_ret")
+					.unwrap();
+				phi.add_incoming(&[(&then_val, then_bb), (&else_val, else_bb)]);
+
+				phi.as_basic_value().into_int_value()
+			}
+			ExprKind::Break(_) => todo!(),
+			ExprKind::Continue => todo!(),
+		};
+
+		Ok(value)
+	}
+
+	fn codegen_bin_op<'a>(
+		&'a self,
+		op: Spanned<BinOp>,
+		left: IntValue<'ctx>,
+		right: IntValue<'ctx>,
+	) -> Result<IntValue<'ctx>> {
+		let ins = match op.bit {
+			BinOp::Plus => self.builder.build_int_add(left, right, "").unwrap(),
+			BinOp::Minus => self.builder.build_int_sub(left, right, "").unwrap(),
+			BinOp::Mul => self.builder.build_int_mul(left, right, "").unwrap(),
+			BinOp::Div => self
+				.builder
+				.build_int_unsigned_div(left, right, "")
+				.unwrap(),
+
+			BinOp::Gt => self
+				.builder
+				.build_int_compare(IntPredicate::SGT, left, right, "")
+				.unwrap(),
+			BinOp::Lt => self
+				.builder
+				.build_int_compare(IntPredicate::SLT, left, right, "")
+				.unwrap(),
+			BinOp::EqEq => self
+				.builder
+				.build_int_compare(IntPredicate::EQ, left, right, "")
+				.unwrap(),
+			_ => todo!(),
+		};
+		Ok(ins)
 	}
 }

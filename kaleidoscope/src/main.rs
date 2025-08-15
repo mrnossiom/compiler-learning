@@ -5,6 +5,7 @@ use kaleidoscope::{
 	codegen::{self, CodeGen},
 	hir, lowerer, parser, resolve, session, ty,
 };
+use tracing_subscriber::{EnvFilter, FmtSubscriber, fmt::time};
 
 #[derive(clap::Parser)]
 struct Args {
@@ -17,6 +18,11 @@ struct Args {
 }
 
 fn main() {
+	FmtSubscriber::builder()
+		.with_env_filter(EnvFilter::from_default_env())
+		.with_timer(time::Uptime::default())
+		.init();
+
 	let args = Args::parse();
 
 	let source = std::fs::read_to_string(&args.path).unwrap();
@@ -81,10 +87,10 @@ fn pipeline(args: &Args, source: &str) {
 
 				let body = tcx.typeck_fn(&decl, body, &cltr.environment);
 				let fn_ = generator.function(ident.name, &decl, &body).unwrap();
-				dbg!(generator.call_fn(fn_).unwrap());
+				tracing::debug!(fn_ret = generator.call_fn(fn_).unwrap());
 			}
 		}
 	}
 
-	println!("Reached pipeline end sucessfully!");
+	tracing::info!("Reached pipeline end sucessfully!");
 }

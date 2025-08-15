@@ -9,6 +9,8 @@ clap = { version = "4", features = ["derive"] }
 index_vec = "0.1"
 parking_lot = "0.12"
 string-interner = "0.19"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Cranelift backend
 cranelift = { version = "0.121", optional = true }
@@ -21,7 +23,7 @@ target-lexicon = { version = "0.13", optional = true }
 # LLVM Backend (broken)
 inkwell = { version = "0.6", features = ["llvm18-1"], optional = true }
 
-# [dev-dependencies]
+[dev-dependencies]
 insta = "1"
 
 [features]
@@ -56,6 +58,8 @@ dbg_macro = "warn"
 # expect_used = "warn"
 # missing_docs_in_private_items = "warn"
 todo = "warn"
+# print_stdout = "warn"
+# print_stderr = "warn"
 # unwrap_used = "warn"
 
 must_use_candidate = "allow"

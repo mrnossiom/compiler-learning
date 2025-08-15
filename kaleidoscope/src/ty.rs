@@ -31,7 +31,7 @@ impl TyCtx<'_> {
 		let mut inferer = Inferer::new(self, decl, body, &env.values);
 		inferer.infer_fn();
 
-		dbg!(&inferer.expr_type);
+		tracing::debug!(expr_type = ?inferer.expr_type);
 
 		inferer.build_body()
 	}
@@ -73,6 +73,7 @@ impl TyCtx<'_> {
 	}
 }
 
+#[derive(Debug)]
 pub struct Inferer<'tcx> {
 	tcx: &'tcx TyCtx<'tcx>,
 	item_env: &'tcx HashMap<Symbol, TyKind>,
@@ -248,6 +249,7 @@ impl Inferer<'_> {
 
 /// Unification
 impl Inferer<'_> {
+	#[tracing::instrument(skip(self), ret)]
 	fn unify(&self, expected: &TyKind<Infer>, actual: &TyKind<Infer>) -> TyKind<Infer> {
 		match (expected, actual) {
 			(TyKind::Infer(infer), ty) | (ty, TyKind::Infer(infer)) => self.unify_infer(infer, ty),
@@ -413,7 +415,8 @@ impl Inferer<'_> {
 			}
 			hir::ExprKind::Continue => tbir::ExprKind::Continue,
 		};
-		dbg!(expr);
+
+		tracing::debug!(?expr);
 		tbir::Expr {
 			kind,
 			ty: self.expr_type.get(&expr.id).unwrap().clone(),

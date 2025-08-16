@@ -281,12 +281,12 @@ impl Inferer<'_> {
 					TyKind::Infer(*tag, *actual_infer)
 				} else {
 					panic!(
-						"infer kind mismatch: expected infer {{{infer:?}}}, recieved infer {{{actual_infer:?}}}"
+						"infer kind mismatch: expected infer {{{infer:?}}}, received infer {{{actual_infer:?}}}"
 					)
 				}
 			}
 			(_, ty) => {
-				panic!("infer kind mismatch: expected infer {{{infer:?}}}, recieved ty {ty:?}")
+				panic!("infer kind mismatch: expected infer {{{infer:?}}}, received ty {ty:?}")
 			}
 		};
 

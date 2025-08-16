@@ -32,7 +32,8 @@
             nativeBuildInputs = with pkgs; [
               pkg-config
               rust-toolchain
-              act
+
+              typos
 
               llvmPackages.llvm.dev
 

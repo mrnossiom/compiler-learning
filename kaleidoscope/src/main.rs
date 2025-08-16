@@ -98,5 +98,5 @@ fn pipeline(args: &Args, source: &str) {
 
 	tracing::debug!(fn_ret = generator.call_fn(main.expect("no main func")).unwrap());
 
-	tracing::info!("Reached pipeline end sucessfully!");
+	tracing::info!("Reached pipeline end successfully!");
 }

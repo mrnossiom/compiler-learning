@@ -5,7 +5,10 @@ use kaleidoscope::{
 	codegen::{self, CodeGen},
 	hir, lowerer, parser, resolve, session, ty,
 };
-use tracing_subscriber::{EnvFilter, FmtSubscriber, fmt::time};
+use tracing_subscriber::{
+	EnvFilter, FmtSubscriber,
+	fmt::{format::FmtSpan, time},
+};
 
 #[derive(clap::Parser)]
 struct Args {
@@ -21,6 +24,7 @@ fn main() {
 	FmtSubscriber::builder()
 		.with_env_filter(EnvFilter::from_default_env())
 		.with_timer(time::Uptime::default())
+		.with_span_events(FmtSpan::ENTER)
 		.init();
 
 	let args = Args::parse();
@@ -86,6 +90,7 @@ fn pipeline(args: &Args, source: &str) {
 				// TODO: do this elsewhere
 				let decl = tcx.lower_fn_decl(decl);
 
+				tracing::debug!(?ident, "before typeck fn");
 				let body = tcx.typeck_fn(&decl, body, &cltr.environment);
 				let fn_ = generator.function(ident.name, &decl, &body).unwrap();
 

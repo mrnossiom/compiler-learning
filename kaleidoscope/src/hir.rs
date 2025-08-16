@@ -55,6 +55,8 @@ pub struct FnDecl<'lcx> {
 pub struct Block<'lcx> {
 	pub stmts: &'lcx [Stmt<'lcx>],
 	pub ret: Option<&'lcx Expr<'lcx>>,
+	pub span: Span,
+	pub id: NodeId,
 }
 
 #[derive(Debug)]

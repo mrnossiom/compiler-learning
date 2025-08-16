@@ -30,6 +30,7 @@ impl<'scx> TyCtx<'scx> {
 /// Context actions
 impl TyCtx<'_> {
 	#[must_use]
+	#[tracing::instrument(level = "debug", skip_all)]
 	pub fn typeck_fn(
 		&self,
 		decl: &FnDecl,
@@ -61,7 +62,10 @@ impl TyCtx<'_> {
 		let inputs = decl
 			.inputs
 			.iter()
-			.map(|(ident, ty)| Param(*ident, self.lower_ty(ty).as_no_infer().unwrap()))
+			.map(|(ident, ty)| Param {
+				ident: *ident,
+				ty: self.lower_ty(ty).as_no_infer().unwrap(),
+			})
 			.collect();
 		FnDecl {
 			inputs,
@@ -127,7 +131,7 @@ impl Inferer<'_> {
 
 		// init context with function arguments
 
-		self.decl.inputs.iter().for_each(|Param(ident, ty)| {
+		self.decl.inputs.iter().for_each(|Param { ident, ty }| {
 			self.local_env
 				.entry(ident.name)
 				.or_default()
@@ -197,18 +201,21 @@ impl Inferer<'_> {
 			hir::ExprKind::Binary(op, left, right) => {
 				let left = self.infer_expr(left);
 				let right = self.infer_expr(right);
-				let op_ty = self.unify(&left, &right);
 
-				// TODO: unify both with number infer
+				let op_ty = self.unify(&left, &right);
+				// TODO: allow with bools
+				self.unify(&TyKind::Integer, &op_ty);
 
 				#[allow(clippy::enum_glob_use)]
-				{
+				let expected = {
 					use lexer::BinOp::*;
 					match op.bit {
 						Plus | Minus | Mul | Div | Mod => TyKind::Integer,
 						Gt | Ge | Lt | Le | EqEq | Ne => TyKind::Bool,
 					}
-				}
+				};
+
+				expected
 			}
 			hir::ExprKind::FnCall { expr, args } => {
 				let expr_ty = self.infer_expr(expr);
@@ -221,7 +228,7 @@ impl Inferer<'_> {
 					todo!("args count mismatch");
 				}
 
-				for (Param(_, expected), actual) in fn_.inputs.iter().zip(args.iter()) {
+				for (Param { ty: expected, .. }, actual) in fn_.inputs.iter().zip(args.iter()) {
 					let actual_ty = self.infer_expr(actual);
 					self.unify(&expected.clone().as_infer(), &actual_ty);
 				}
@@ -258,6 +265,7 @@ impl Inferer<'_> {
 /// Unification
 impl Inferer<'_> {
 	fn unify(&mut self, expected: &TyKind<Infer>, actual: &TyKind<Infer>) -> TyKind<Infer> {
+		tracing::debug!(?expected, ?actual, "unify");
 		match (expected, actual) {
 			(TyKind::Infer(tag, infer), ty) | (ty, TyKind::Infer(tag, infer)) => {
 				self.unify_infer(*tag, *infer, ty)
@@ -271,6 +279,7 @@ impl Inferer<'_> {
 	}
 
 	fn unify_infer(&mut self, tag: InferTag, infer: Infer, other: &TyKind<Infer>) -> TyKind<Infer> {
+		tracing::debug!(?tag, ?infer, ?other, "unify infer");
 		let unified = match (infer, other) {
 			(Infer::Integer, TyKind::Integer) => TyKind::Integer,
 			(Infer::Float, TyKind::Float) => TyKind::Float,
@@ -296,12 +305,15 @@ impl Inferer<'_> {
 	}
 
 	fn resolve_ty(&self, id: hir::NodeId) -> TyKind {
+		tracing::debug!(?id, "resolve ty");
+
 		let mut tag = match self.expr_type.get(&id).cloned().unwrap().as_no_infer() {
 			Ok(ty) => return ty,
 			Err((tag, _)) => tag,
 		};
 
 		loop {
+			// tracing::debug!(?tag, "{:?}", self.infer_map);
 			match self.infer_map.get(&tag).cloned().unwrap().as_no_infer() {
 				Ok(ty) => return ty,
 				Err((new_tag, _)) => tag = new_tag,
@@ -311,7 +323,10 @@ impl Inferer<'_> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Param(pub ast::Ident, pub TyKind);
+pub struct Param {
+	pub ident: ast::Ident,
+	pub ty: TyKind,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnDecl {
@@ -386,13 +401,19 @@ impl Inferer<'_> {
 		self.build_block(self.body)
 	}
 	fn build_block(&self, block: &hir::Block) -> tbir::Block {
+		let ret = block.ret.map(|expr| self.build_expr(expr));
+		let ty = ret.as_ref().map_or(TyKind::Unit, |expr| expr.ty.clone());
+
 		tbir::Block {
 			stmts: block
 				.stmts
 				.iter()
 				.map(|stmt| self.build_stmt(stmt))
 				.collect(),
-			ret: block.ret.map(|expr| self.build_expr(expr)),
+			ret,
+			ty,
+			span: block.span,
+			id: block.id,
 		}
 	}
 

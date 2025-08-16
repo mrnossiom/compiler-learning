@@ -1,21 +1,5 @@
 extern fn putchard(c: uint);
 
-fn fibo(n: uint) uint {
-	a := 0;
-	b := 0;
-
-	i := n;
-	while n != 0 {
-		next := a + b;
-		a = b;
-		b = next;
-
-		n = n - 1;
-	}
-
-	b
-}
-
 fn num_to_ascii(n: uint) uint /*Option<uint>*/ {
 	if n <= 9 {
 		num_ascii_base := 48;
@@ -27,7 +11,7 @@ fn num_to_ascii(n: uint) uint /*Option<uint>*/ {
 	}
 }
 
-fn print_num(n: uint) {
+fn print_num_rev(n: uint) {
 	if n == 0 {
 		putchard(num_to_ascii(0));
 	} else {
@@ -36,14 +20,31 @@ fn print_num(n: uint) {
 			n = n / 10;
 			putchard(num_to_ascii(rest));
 		}
+	};
+	// newline
+	putchard(10);
+}
+
+fn fibo(n: uint) uint {
+	a := 0;
+	b := 1;
+
+	while n != 0 {
+		next := a + b;
+		a = b;
+		b = next;
+
+		n = n - 1;
 	}
+
+	b
 }
 
 fn main() {
-	n := 5;
+	n := 10;
 	while n != 0 {
-		res := fibo(5);
-		print_num(res);
+		res := fibo(n);
+		print_num_rev(res);
 		
 		n = n - 1;
 	}

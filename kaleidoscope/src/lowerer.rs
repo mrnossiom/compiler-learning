@@ -77,6 +77,8 @@ impl<'lcx> Lowerer<'lcx> {
 		Block {
 			stmts: self.alloc([]),
 			ret: Some(expr),
+			span: expr.span,
+			id: self.make_new_node_id(),
 		}
 	}
 }
@@ -124,16 +126,18 @@ impl<'lcx> Lowerer<'lcx> {
 		})
 	}
 
-	fn lower_block(&self, body: &'lcx ast::Block) -> Block<'lcx> {
+	fn lower_block(&self, block: &'lcx ast::Block) -> Block<'lcx> {
 		let mut stmts = Vec::new();
 		let mut ret = None;
 
-		let mut ast_stmts = &body.stmts[..];
+		let mut ast_stmts = &block.stmts[..];
 		while let [stmt, tail @ ..] = ast_stmts {
 			ast_stmts = tail;
 
 			let kind = match &stmt.kind {
-				ast::StmtKind::Loop { body } => todo!(),
+				ast::StmtKind::Loop { body } => StmtKind::Loop {
+					block: self.alloc(self.lower_block(body)),
+				},
 				// desugar to simple loop
 				ast::StmtKind::WhileLoop { check, body } => self.lower_while_loop(check, body),
 				ast::StmtKind::ForLoop { pat, iter, body } => todo!(),
@@ -181,6 +185,8 @@ impl<'lcx> Lowerer<'lcx> {
 		Block {
 			stmts: self.alloc(stmts),
 			ret,
+			span: block.span,
+			id: self.make_node_id(block.id),
 		}
 	}
 

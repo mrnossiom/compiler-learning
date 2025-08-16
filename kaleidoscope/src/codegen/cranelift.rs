@@ -5,6 +5,12 @@ use cranelift_control::ControlPlane;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
+pub enum KValue {
+	Value(Value),
+	Zst,
+	Never,
+}
+
 use crate::{
 	Result, ast,
 	codegen::CodeGen,
@@ -45,15 +51,16 @@ impl<'scx> Generator<'scx> {
 	}
 }
 
-fn to_cl_type(output: &ty::TyKind) -> Type {
+// Return `None` on non-concrete types (e.g. zst, never)
+fn to_cl_type(output: &ty::TyKind) -> Option<Type> {
 	match &output {
-		ty::TyKind::Unit => types::I8, // TODO: unit is zst
-		ty::TyKind::Never => todo!(),
-		ty::TyKind::Bool => types::I8,
-		ty::TyKind::Integer => types::I32,
-		ty::TyKind::Float => types::F32,
+		ty::TyKind::Unit => None,
+		ty::TyKind::Never => None,
+		ty::TyKind::Bool => Some(types::I8),
+		ty::TyKind::Integer => Some(types::I32),
+		ty::TyKind::Float => Some(types::F32),
 		ty::TyKind::Str => todo!(),
-		ty::TyKind::Fn(fn_decl) => todo!(),
+		ty::TyKind::Fn(_fn_decl) => todo!(),
 		ty::TyKind::Infer(_, _) => unreachable!(),
 	}
 }
@@ -64,16 +71,19 @@ impl Generator<'_> {
 		name: Symbol,
 		decl: &ty::FnDecl,
 		linkage: Linkage,
-	) -> Result<FuncId> {
+	) -> Result<(FuncId, Signature)> {
 		match self.functions.get(&name) {
 			None => {
 				let mut signature = self.module.make_signature();
-				for ty::Param(_name, ty) in &decl.inputs {
-					signature.params.push(AbiParam::new(to_cl_type(ty)));
+				for ty::Param { ident: _, ty } in &decl.inputs {
+					let Some(type_) = to_cl_type(ty) else {
+						continue;
+					};
+					signature.params.push(AbiParam::new(type_));
 				}
-				signature
-					.returns
-					.push(AbiParam::new(to_cl_type(&decl.output)));
+				if let Some(type_) = to_cl_type(&decl.output) {
+					signature.returns.push(AbiParam::new(type_));
+				}
 
 				let func_name = self.scx.symbols.resolve(name);
 				let func_id = self
@@ -89,7 +99,7 @@ impl Generator<'_> {
 						param_count: decl.inputs.len(),
 					},
 				);
-				Ok(func_id)
+				Ok((func_id, signature))
 			}
 			Some(_) => Err("already defined"),
 		}
@@ -99,11 +109,13 @@ impl Generator<'_> {
 impl CodeGen for Generator<'_> {
 	type Fn = fn() -> i64;
 
+	#[tracing::instrument(level = "debug", skip(self, decl))]
 	fn extern_(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<()> {
 		self.declare_func(name, decl, Linkage::Import)?;
 		Ok(())
 	}
 
+	#[tracing::instrument(level = "debug", skip(self, decl, body))]
 	fn function(
 		&mut self,
 		name: Symbol,
@@ -112,15 +124,8 @@ impl CodeGen for Generator<'_> {
 	) -> Result<Self::Fn> {
 		let mut context = self.module.make_context();
 
-		let signature = &mut context.func.signature;
-		for ty::Param(_name, ty) in &decl.inputs {
-			signature.params.push(AbiParam::new(to_cl_type(ty)));
-		}
-		signature
-			.returns
-			.push(AbiParam::new(to_cl_type(&decl.output)));
-
-		let func_id = self.declare_func(name, decl, Linkage::Export)?;
+		let (func_id, signature) = self.declare_func(name, decl, Linkage::Export)?;
+		context.func.signature = signature;
 
 		let mut builder = FunctionBuilder::new(&mut context.func, &mut self.builder_context);
 
@@ -130,12 +135,16 @@ impl CodeGen for Generator<'_> {
 		builder.seal_block(entry_block);
 
 		let mut values = HashMap::new();
-		for (i, ty::Param(argument, ty)) in decl.inputs.iter().enumerate() {
+		for (i, (ident, ty)) in decl
+			.inputs
+			.iter()
+			// skip zst
+			.filter_map(|param| to_cl_type(&param.ty).map(|ty| (param.ident, ty)))
+			.enumerate()
+		{
 			let value = builder.block_params(entry_block)[i];
-			let variable = self
-				.variable_generator
-				.create_var(&mut builder, value, to_cl_type(ty));
-			values.insert(argument.name, variable);
+			let variable = self.variable_generator.create_var(&mut builder, value, ty);
+			values.insert(ident.name, Some(variable));
 		}
 
 		if let Some(ref mut func) = self.functions.get_mut(&name) {
@@ -144,11 +153,14 @@ impl CodeGen for Generator<'_> {
 
 		let mut generator = FunctionGenerator {
 			scx: self.scx,
+
 			builder,
 			functions: &self.functions,
 			module: &mut self.module,
 			values,
 			variable_generator: &mut self.variable_generator,
+
+			loops: Vec::default(),
 		};
 
 		let return_value = match generator.codegen_block(body) {
@@ -159,7 +171,16 @@ impl CodeGen for Generator<'_> {
 			}
 		};
 
-		generator.builder.ins().return_(&[return_value]);
+		match return_value {
+			KValue::Value(val) => {
+				generator.builder.ins().return_(&[val]);
+			}
+			KValue::Zst => {
+				generator.builder.ins().return_(&[]);
+			}
+			KValue::Never => {}
+		};
+
 		generator.builder.finalize();
 
 		context
@@ -213,12 +234,17 @@ pub struct FunctionGenerator<'scx, 'bld> {
 	builder: FunctionBuilder<'bld>,
 	functions: &'bld HashMap<Symbol, CompiledFunction>,
 	module: &'bld mut JITModule,
-	values: HashMap<Symbol, Variable>,
+	values: HashMap<Symbol, Option<Variable>>,
 	variable_generator: &'bld mut VariableGenerator,
+
+	loops: Vec<(Block, Block)>,
 }
 
+/// Codegen tbir structs
 impl FunctionGenerator<'_, '_> {
-	fn codegen_block(&mut self, block: &tbir::Block) -> Result<Value> {
+	fn codegen_block(&mut self, block: &tbir::Block) -> Result<KValue> {
+		tracing::debug!(id=?block.id, "codegen block");
+
 		for stmt in &block.stmts {
 			self.codegen_stmt(stmt)?;
 		}
@@ -226,8 +252,7 @@ impl FunctionGenerator<'_, '_> {
 		if let Some(expr) = &block.ret {
 			self.codegen_expr(expr)
 		} else {
-			// TODO: should return a zst
-			Ok(self.builder.ins().iconst(types::I8, 0))
+			Ok(KValue::Zst)
 		}
 	}
 
@@ -238,53 +263,85 @@ impl FunctionGenerator<'_, '_> {
 				Ok(())
 			}
 			tbir::StmtKind::Let { ident, value, .. } => {
-				let expr_value = self.codegen_expr(value)?;
-				let value = self.variable_generator.create_var(
-					&mut self.builder,
-					expr_value,
-					to_cl_type(&value.ty),
-				);
-				self.values.insert(ident.name, value);
+				match self.codegen_expr(value)? {
+					KValue::Value(expr_value) => {
+						let value = self.variable_generator.create_var(
+							&mut self.builder,
+							expr_value,
+							to_cl_type(&value.ty).unwrap(),
+						);
+						self.values.insert(ident.name, Some(value));
+					}
+					KValue::Zst => {
+						self.values.insert(ident.name, None);
+					}
+					KValue::Never => {}
+				};
 				Ok(())
 			}
 			tbir::StmtKind::Assign { target, value } => {
-				let variable = *self.values.get(&target.name).unwrap();
-				let expr_value = self.codegen_expr(value)?;
-				self.builder.def_var(variable, expr_value);
+				let Some(variable) = *self.values.get(&target.name).unwrap() else {
+					// handle zst
+					return Ok(());
+				};
 
+				match self.codegen_expr(value)? {
+					KValue::Value(expr_value) => {
+						self.builder.def_var(variable, expr_value);
+					}
+					KValue::Zst => {}
+					KValue::Never => {}
+				};
 				Ok(())
 			}
 			tbir::StmtKind::Loop { block } => {
-				let loop_header = self.builder.create_block();
-				self.builder.switch_to_block(loop_header);
+				let loop_ = self.builder.create_block();
+				let cont = self.builder.create_block();
+
+				self.loops.push((loop_, cont));
+
+				self.builder.ins().jump(loop_, &[]);
+
+				self.builder.switch_to_block(loop_);
+
 				self.codegen_block(block)?;
-				self.builder.ins().jump(loop_header, &[]);
-				self.builder.seal_block(loop_header);
+				self.builder.ins().jump(loop_, &[]);
+
+				self.builder.seal_block(loop_);
+
+				self.builder.switch_to_block(cont);
+				self.builder.seal_block(cont);
+
+				self.loops.pop();
 				Ok(())
 			}
 		}
 	}
 
-	fn codegen_expr(&mut self, expr: &tbir::Expr) -> Result<Value> {
+	fn codegen_expr(&mut self, expr: &tbir::Expr) -> Result<KValue> {
 		let value = match &expr.kind {
 			tbir::ExprKind::Literal(lit, sym) => {
 				let sym = self.scx.symbols.resolve(*sym);
-				match lit {
+				let value = match lit {
 					lexer::LiteralKind::Integer => self
 						.builder
 						.ins()
-						.iconst(to_cl_type(&expr.ty), sym.parse::<i64>().unwrap()),
+						.iconst(to_cl_type(&expr.ty).unwrap(), sym.parse::<i64>().unwrap()),
 					lexer::LiteralKind::Float => {
 						self.builder.ins().f64const(sym.parse::<f64>().unwrap())
 					}
 					lexer::LiteralKind::Str => todo!(),
-				}
+				};
+				KValue::Value(value)
 			}
 			tbir::ExprKind::Variable(ident) => match self.values.get(&ident.name) {
-				Some(var) => self.builder.use_var(*var),
+				Some(Some(var)) => KValue::Value(self.builder.use_var(*var)),
+				Some(None) => KValue::Zst,
 				None => return Err("var undefined"),
 			},
-			tbir::ExprKind::Binary(op, left, right) => self.codegen_binop(*op, left, right)?,
+			tbir::ExprKind::Binary(op, left, right) => {
+				KValue::Value(self.codegen_binop(*op, left, right)?)
+			}
 			tbir::ExprKind::FnCall { expr, args } => {
 				let tbir::ExprKind::Variable(ident) = expr.kind else {
 					todo!("not a fn")
@@ -299,80 +356,77 @@ impl FunctionGenerator<'_, '_> {
 
 				let local_func = self.module.declare_func_in_func(func.id, self.builder.func);
 
-				let args = args
-					.iter()
-					.map(|arg| self.codegen_expr(arg))
-					.collect::<Result<Vec<_>>>()?;
+				let mut argsz = Vec::new();
+				for arg in args {
+					match self.codegen_expr(arg)? {
+						KValue::Value(expr_value) => {
+							argsz.push(expr_value);
+						}
+						KValue::Zst | KValue::Never => {}
+					}
+				}
 
-				let call = self.builder.ins().call(local_func, &args);
+				let call = self.builder.ins().call(local_func, &argsz);
 
-				self.builder.inst_results(call)[0]
+				let inst_results = self.builder.inst_results(call);
+				match inst_results.len() {
+					0 => KValue::Zst,
+					1 => KValue::Value(inst_results[0]),
+					_ => panic!(),
+				}
 			}
 			tbir::ExprKind::If {
 				cond,
 				conseq,
 				altern,
-			} => {
-				let condition = self.codegen_expr(cond)?;
+			} => self.codegen_if(cond, conseq, altern.as_deref())?,
+			tbir::ExprKind::Break(expr) => {
+				let (_, cont) = *self.loops.last().unwrap();
 
-				let then_block = self.builder.create_block();
-				// only make a block if the if has an alternative
-				let else_block = altern.as_ref().map(|_| self.builder.create_block());
-				let cont_block = self.builder.create_block();
-
-				// cranelift block params are used like phi values
-				self.builder.append_block_param(cont_block, types::I64);
-
-				self.builder.ins().brif(
-					condition,
-					then_block,
-					&[],
-					else_block.unwrap_or(cont_block),
-					&[],
-				);
-
-				self.builder.switch_to_block(then_block);
-				self.builder.seal_block(then_block);
-				let then_ret = self.codegen_block(conseq)?;
-
-				self.builder.ins().jump(cont_block, &[then_ret.into()]);
-
-				if let Some(altern) = altern {
-					// TODO
-					let else_block = else_block.unwrap();
-
-					self.builder.switch_to_block(else_block);
-					self.builder.seal_block(else_block);
-
-					let else_ret = self.codegen_block(altern)?;
-					self.builder.ins().jump(cont_block, &[else_ret.into()]);
+				if let Some(expr) = expr {
+					match self.codegen_expr(expr)? {
+						KValue::Value(expr_value) => {
+							self.builder.ins().jump(cont, &[expr_value.into()]);
+						}
+						KValue::Zst => {
+							self.builder.ins().jump(cont, &[]);
+						}
+						KValue::Never => {}
+					}
+				} else {
+					self.builder.ins().jump(cont, &[]);
 				}
 
-				self.builder.switch_to_block(cont_block);
-				self.builder.seal_block(cont_block);
-
-				self.builder.block_params(cont_block)[0]
-			}
-			tbir::ExprKind::Break(expr) => {
-				let expr_value = expr.as_ref().map(|expr| self.codegen_expr(expr));
-				todo!("break expr")
+				KValue::Never
 			}
 			tbir::ExprKind::Continue => {
-				todo!("continue expr")
+				let (loop_, _) = *self.loops.last().unwrap();
+
+				self.builder.ins().jump(loop_, &[]);
+
+				KValue::Never
 			}
 		};
-
 		Ok(value)
 	}
+}
 
+/// Codegen bits
+impl FunctionGenerator<'_, '_> {
 	fn codegen_binop(
 		&mut self,
 		op: ast::Spanned<lexer::BinOp>,
 		left: &tbir::Expr,
 		right: &tbir::Expr,
 	) -> Result<Value> {
+		// cannot be zst
 		let lhs = self.codegen_expr(left)?;
 		let rhs = self.codegen_expr(right)?;
+
+		let (lhs, rhs) = match (lhs, rhs) {
+			(KValue::Value(lhs), KValue::Value(rhs)) => (lhs, rhs),
+			_ => panic!(),
+		};
 
 		let value = match op.bit {
 			lexer::BinOp::Plus => self.builder.ins().iadd(lhs, rhs),
@@ -396,5 +450,70 @@ impl FunctionGenerator<'_, '_> {
 		};
 
 		Ok(value)
+	}
+
+	fn codegen_if(
+		&mut self,
+		cond: &tbir::Expr,
+		conseq: &tbir::Block,
+		altern: Option<&tbir::Block>,
+	) -> Result<KValue> {
+		let condition = match self.codegen_expr(cond)? {
+			KValue::Value(val) => val,
+			KValue::Zst | KValue::Never => panic!(),
+		};
+
+		let then_block = self.builder.create_block();
+		let else_block = altern.as_ref().map(|_| self.builder.create_block());
+		let cont_block = self.builder.create_block();
+		tracing::debug!(?then_block, ?else_block, ?cont_block, "codegen if");
+
+		if let Some(ty) = to_cl_type(&conseq.ty) {
+			self.builder.append_block_param(cont_block, ty);
+		}
+
+		self.builder.ins().brif(
+			condition,
+			then_block,
+			&[],
+			else_block.unwrap_or(cont_block),
+			&[],
+		);
+		self.builder.switch_to_block(then_block);
+		self.builder.seal_block(then_block);
+		match self.codegen_block(conseq)? {
+			KValue::Value(then_ret) => {
+				self.builder.ins().jump(cont_block, &[then_ret.into()]);
+			}
+			KValue::Zst => {
+				self.builder.ins().jump(cont_block, &[]);
+			}
+			KValue::Never => {}
+		}
+		if let Some(altern) = altern {
+			// TODO
+			let else_block = else_block.unwrap();
+
+			self.builder.switch_to_block(else_block);
+			self.builder.seal_block(else_block);
+
+			match self.codegen_block(altern)? {
+				KValue::Value(else_ret) => {
+					self.builder.ins().jump(cont_block, &[else_ret.into()]);
+				}
+				KValue::Zst => {
+					self.builder.ins().jump(cont_block, &[]);
+				}
+				KValue::Never => {}
+			}
+		}
+		self.builder.switch_to_block(cont_block);
+		self.builder.seal_block(cont_block);
+		let block_params = self.builder.block_params(cont_block);
+		Ok(match block_params.len() {
+			0 => KValue::Zst,
+			1 => KValue::Value(block_params[0]),
+			_ => panic!(),
+		})
 	}
 }

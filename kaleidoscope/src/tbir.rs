@@ -10,20 +10,23 @@ use crate::{
 	ty,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
 	pub stmts: Vec<Stmt>,
 	pub ret: Option<Expr>,
+	pub ty: ty::TyKind,
+	pub span: Span,
+	pub id: hir::NodeId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Stmt {
 	pub kind: StmtKind,
 	pub span: Span,
 	pub id: hir::NodeId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StmtKind {
 	Expr(Expr),
 	Let { ident: ast::Ident, value: Expr },
@@ -31,7 +34,7 @@ pub enum StmtKind {
 	Loop { block: Block },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Expr {
 	pub kind: ExprKind,
 	pub ty: ty::TyKind,
@@ -39,7 +42,7 @@ pub struct Expr {
 	pub id: hir::NodeId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExprKind {
 	Literal(LiteralKind, Symbol),
 	Variable(ast::Ident),

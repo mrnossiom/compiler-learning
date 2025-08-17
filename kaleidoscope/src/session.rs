@@ -1,21 +1,30 @@
 //! Common data for front related operations
 
-use std::{cmp, fmt, ops::Sub, process, rc::Rc};
+use std::{
+	cmp,
+	collections::HashSet,
+	fmt, io,
+	ops::{self, Sub},
+	path::{Path, PathBuf},
+	process,
+	rc::Rc,
+};
 
+use ariadne::{Config, IndexType, Report, ReportBuilder};
 use parking_lot::RwLock;
 use string_interner::{StringInterner, Symbol as _, backend::StringBackend, symbol::SymbolU32};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
-	pub start: u32,
-	pub end: u32,
+	pub start: BytePos,
+	pub end: BytePos,
 }
 
 impl Span {
-	pub(crate) const DUMMY: Self = Self::new(u32::MAX, u32::MAX);
+	pub(crate) const DUMMY: Self = Self::new(BytePos(u32::MAX), BytePos(u32::MAX));
 
 	#[must_use]
-	pub const fn new(start: u32, end: u32) -> Self {
+	pub const fn new(start: BytePos, end: BytePos) -> Self {
 		Self { start, end }
 	}
 
@@ -44,9 +53,22 @@ impl Span {
 	}
 }
 
-impl Sub<u32> for Span {
+impl ariadne::Span for Span {
+	type SourceId = BytePos;
+	fn source(&self) -> &Self::SourceId {
+		&self.start
+	}
+	fn start(&self) -> usize {
+		self.start.to_usize()
+	}
+	fn end(&self) -> usize {
+		self.end.to_usize()
+	}
+}
+
+impl Sub<BytePos> for Span {
 	type Output = Self;
-	fn sub(self, rhs: u32) -> Self::Output {
+	fn sub(self, rhs: BytePos) -> Self::Output {
 		Self {
 			start: self.start - rhs,
 			end: self.end - rhs,
@@ -56,7 +78,7 @@ impl Sub<u32> for Span {
 
 impl fmt::Debug for Span {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "sp#{}..{}", self.start, self.end)
+		write!(f, "sp#{}..{}", self.start.to_u32(), self.end.to_u32())
 	}
 }
 
@@ -124,18 +146,19 @@ impl SymbolInterner {
 
 #[derive(Debug, Default)]
 pub struct SessionCtx {
+	pub options: Options,
+
 	pub symbols: SymbolInterner,
 	pub source_map: RwLock<SourceMap>,
 }
 
 impl SessionCtx {
-	pub fn emit_diagnostic(&self, diagnostic: &Diagnostic) {
-		eprintln!(
-			"[{:?}] {}: `{}`",
-			diagnostic.level,
-			diagnostic.msg,
-			self.source_map.read().fetch_span(diagnostic.span)
-		);
+	pub fn emit_diagnostic(&self, diag: &Diagnostic) {
+		let cache = self.source_map.read();
+		diag.report.eprint(&*cache).unwrap();
+
+		#[cfg(feature = "debug")]
+		eprintln!("error was emitted here: {}", diag.loc);
 	}
 
 	pub fn emit_fatal_diagnostic(&self, diagnostic: &Diagnostic) -> ! {
@@ -144,84 +167,153 @@ impl SessionCtx {
 	}
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum DiagLevel {
-	Error,
-	Warning,
-	Info,
+#[derive(Debug, Default)]
+pub struct Options {
+	pub input: Option<PathBuf>,
+	pub output: Option<PathBuf>,
+
+	pub jit: bool,
+
+	// TODO: replace with an enum
+	pub print: HashSet<String>,
 }
 
 #[derive(Debug)]
 pub struct Diagnostic {
-	msg: String,
-	span: Span,
-
-	level: DiagLevel,
+	report: Box<Report<'static, Span>>,
 	#[cfg(feature = "debug")]
-	location: &'static std::panic::Location<'static>,
+	loc: &'static std::panic::Location<'static>,
 }
 
 impl Diagnostic {
 	#[must_use]
 	#[track_caller]
-	pub const fn new_err(msg: String, span: Span) -> Self {
-		Self::new(DiagLevel::Error, msg, span)
-	}
-
-	#[must_use]
-	#[track_caller]
-	pub const fn new(level: DiagLevel, msg: String, span: Span) -> Self {
+	pub fn new(report: ReportBuilder<'static, Span>) -> Self {
+		let config = Config::new().with_index_type(IndexType::Byte);
 		Self {
-			msg,
-			span,
-			level,
+			report: Box::new(report.with_config(config).finish()),
 			#[cfg(feature = "debug")]
-			location: std::panic::Location::caller(),
+			loc: std::panic::Location::caller(),
 		}
 	}
-}
-
-#[derive(Debug, Default)]
-pub struct SourceMap {
-	files: Vec<Rc<SourceFile>>,
-	offset: u32,
 }
 
 #[derive(Debug, Clone)]
 pub struct SourceFile {
 	pub name: String,
-
 	pub content: String,
+	pub offset: BytePos,
+}
 
-	pub offset: u32,
+#[derive(Debug, Default)]
+pub struct SourceMap {
+	sources: Vec<Rc<SourceFile>>,
+	diagnostic_sources: Vec<ariadne::Source>,
+	offset: BytePos,
 }
 
 impl SourceMap {
+	pub fn load_source_from_file(&mut self, path: &Path) -> io::Result<Rc<SourceFile>> {
+		let filename = path.file_name().unwrap();
+		let src = std::fs::read_to_string(path)?;
+
+		let source = self.load_source(&filename.to_string_lossy(), src);
+		Ok(source)
+	}
+
 	pub fn load_source(&mut self, name: &str, src: String) -> Rc<SourceFile> {
 		let src_len = u32::try_from(src.len()).unwrap();
 
 		let src_file = Rc::new(SourceFile {
 			name: name.to_owned(),
-			content: src,
+			content: src.clone(),
 			offset: self.offset,
 		});
 
-		self.files.push(src_file.clone());
-		self.offset += src_len;
+		let diagnostic_src = ariadne::Source::from(src);
+
+		self.sources.push(src_file.clone());
+		self.diagnostic_sources.push(diagnostic_src);
+		self.offset = self.offset + BytePos(src_len);
 
 		src_file
 	}
 
+	pub fn lookup_source_file_idx(&self, pos: BytePos) -> FileIdx {
+		let file_idx = self
+			.sources
+			.binary_search_by_key(&pos.to_u32(), |f| f.offset.to_u32())
+			.unwrap_or_else(|p| p - 1);
+		FileIdx::new(file_idx)
+	}
+
 	#[must_use]
 	pub fn fetch_span(&self, span: Span) -> &str {
-		let file_idx = self
-			.files
-			.binary_search_by_key(&span.start, |f| f.offset)
-			.unwrap_or_else(|p| p - 1);
-		let file = &self.files[file_idx];
+		let file_idx = self.lookup_source_file_idx(span.start);
+		let file = &self.sources[file_idx.to_usize()];
 
 		let local_span = span - file.offset;
 
-		&file.content[local_span.start as usize..local_span.end as usize]
+		&file.content[local_span.start.to_usize()..local_span.end.to_usize()]
+	}
+}
+
+impl ariadne::Cache<BytePos> for &SourceMap {
+	type Storage = String;
+	fn fetch(&mut self, id: &BytePos) -> Result<&ariadne::Source<Self::Storage>, impl fmt::Debug> {
+		let file_idx = self.lookup_source_file_idx(*id);
+		Result::<_, &'static str>::Ok(&self.diagnostic_sources[file_idx.to_usize()])
+	}
+	fn display<'a>(&self, id: &'a BytePos) -> Option<impl fmt::Display + 'a> {
+		let file_idx = self.lookup_source_file_idx(*id);
+		Some(self.sources[file_idx.to_usize()].name.clone())
+	}
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FileIdx(usize);
+
+impl FileIdx {
+	fn new(idx: usize) -> Self {
+		Self(idx)
+	}
+
+	fn to_usize(self) -> usize {
+		self.0
+	}
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BytePos(u32);
+
+impl BytePos {
+	pub fn from_u32(pos: u32) -> Self {
+		BytePos(pos)
+	}
+
+	pub fn from_usize(pos: usize) -> Self {
+		BytePos(u32::try_from(pos).unwrap())
+	}
+
+	pub fn to_u32(self) -> u32 {
+		self.0
+	}
+
+	pub fn to_usize(self) -> usize {
+		self.0 as usize
+	}
+}
+
+impl ops::Add for BytePos {
+	type Output = BytePos;
+	fn add(self, rhs: Self) -> Self::Output {
+		Self(self.0 + rhs.0)
+	}
+}
+
+impl ops::Sub for BytePos {
+	type Output = BytePos;
+	fn sub(self, rhs: Self) -> Self::Output {
+		Self(self.0 - rhs.0)
 	}
 }

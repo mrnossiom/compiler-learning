@@ -14,13 +14,14 @@ use inkwell::{
 use crate::{
 	Result,
 	ast::Spanned,
+	codegen::Backend,
+	hir,
 	lexer::{BinOp, LiteralKind},
+	resolve::Environment,
 	session::{SessionCtx, Symbol},
 	tbir::{self, Expr, ExprKind},
 	ty::{self, FnDecl},
 };
-
-use super::CodeGen;
 
 pub struct Generator<'scx, 'ctx> {
 	scx: &'scx SessionCtx,
@@ -52,15 +53,24 @@ impl<'scx, 'ctx> Generator<'scx, 'ctx> {
 	}
 }
 
-impl<'ctx> CodeGen for Generator<'_, 'ctx> {
-	type Fn = FunctionValue<'ctx>;
+impl<'ctx> Backend for Generator<'_, 'ctx> {
+	type FuncId = FunctionValue<'ctx>;
 
-	fn extern_(&mut self, name: Symbol, decl: &FnDecl) -> Result<()> {
+	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment) {
+		todo!()
+	}
+
+	fn declare_extern(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<()> {
 		self.define_func(name, decl)?;
 		Ok(())
 	}
 
-	fn function(&mut self, name: Symbol, decl: &FnDecl, body: &tbir::Block) -> Result<Self::Fn> {
+	fn declare_function(
+		&mut self,
+		name: Symbol,
+		decl: &FnDecl,
+		// body: &tbir::Block,
+	) -> Result<Self::FuncId> {
 		if self
 			.module
 			.get_function(&self.scx.symbols.resolve(name))
@@ -69,16 +79,24 @@ impl<'ctx> CodeGen for Generator<'_, 'ctx> {
 			return Err("cannot redefine extern function");
 		}
 
-		let fn_val = self.define_func(name, decl)?;
+		let func_val = self.define_func(name, decl)?;
+		Ok(func_val)
+	}
 
-		let bb = self.ctx.append_basic_block(fn_val, "entry");
+	fn define_function(
+		&mut self,
+		func_val: Self::FuncId,
+		decl: &ty::FnDecl,
+		body: &tbir::Block,
+	) -> Result<()> {
+		let bb = self.ctx.append_basic_block(func_val, "entry");
 		self.builder.position_at_end(bb);
 
 		self.variables.clear();
-		fn_val
+		func_val
 			.get_param_iter()
 			.zip(&decl.inputs)
-			.for_each(|(arg, ty::Param(ident, ty))| {
+			.for_each(|(arg, ty::Param { ident, .. })| {
 				self.variables.insert(
 					ident.name,
 					arg.into_int_value()
@@ -90,29 +108,31 @@ impl<'ctx> CodeGen for Generator<'_, 'ctx> {
 
 		self.builder.build_return(Some(&ret_val)).unwrap();
 
-		if !fn_val.verify(true) {
+		if !func_val.verify(true) {
 			#[allow(unsafe_code)]
 			unsafe {
-				fn_val.delete();
+				func_val.delete();
 			}
 			return Err("function is invalid");
 		}
 
-		fn_val.print_to_stderr();
-
-		Ok(fn_val)
-	}
-
-	fn call_fn(&mut self, func: Self::Fn) -> Result<i64> {
-		#[allow(unsafe_code)]
-		let ret = unsafe {
-			self.jit
-				.get_function::<unsafe extern "C" fn() -> i64>(func.get_name().to_str().unwrap())
+		if self.scx.options.print.contains("bir") {
+			func_val.print_to_stderr();
 		}
-		.unwrap();
-		#[allow(unsafe_code)]
-		Ok(unsafe { ret.call() })
+
+		Ok(())
 	}
+
+	// fn call_fn(&mut self, func: Self::Fn) -> Result<i64> {
+	// 	#[allow(unsafe_code)]
+	// 	let ret = unsafe {
+	// 		self.jit
+	// 			.get_function::<unsafe extern "C" fn() -> i64>(func.get_name().to_str().unwrap())
+	// 	}
+	// 	.unwrap();
+	// 	#[allow(unsafe_code)]
+	// 	Ok(unsafe { ret.call() })
+	// }
 }
 
 impl<'ctx> Generator<'_, 'ctx> {
@@ -163,7 +183,7 @@ impl<'ctx> Generator<'_, 'ctx> {
 		fn_val
 			.get_param_iter()
 			.zip(&decl.inputs)
-			.for_each(|(arg, ty::Param(ident, ty))| {
+			.for_each(|(arg, ty::Param { ident, ty })| {
 				arg.into_int_value()
 					.set_name(&self.scx.symbols.resolve(ident.name));
 			});
@@ -327,6 +347,7 @@ impl<'ctx> Generator<'_, 'ctx> {
 
 				phi.as_basic_value().into_int_value()
 			}
+			ExprKind::Return(_) => todo!(),
 			ExprKind::Break(_) => todo!(),
 			ExprKind::Continue => todo!(),
 		};

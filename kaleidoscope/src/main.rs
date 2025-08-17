@@ -1,26 +1,26 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, process};
 
 use clap::Parser;
-use kaleic::{codegen::CodeGenCtx, lowerer, parser, resolve, session, ty};
+use kaleic::{
+	codegen::{Backend, CraneliftBackend},
+	lowerer, parser, resolve,
+	session::{self, SessionCtx},
+	ty,
+};
 use tracing_subscriber::{EnvFilter, FmtSubscriber, fmt::time};
 
-#[expect(clippy::struct_excessive_bools)]
 #[derive(clap::Parser)]
 struct Args {
-	pub path: PathBuf,
+	pub input: Option<PathBuf>,
+	#[clap(long)]
+	pub output: Option<PathBuf>,
 
 	#[clap(long)]
 	pub jit: bool,
 
+	/// Valid values are ast, hir, tbir, bir
 	#[clap(long)]
-	pub print_ast: bool,
-	#[clap(long)]
-	pub print_hir: bool,
-	#[clap(long)]
-	pub print_tbir: bool,
-	/// Print Backend IR
-	#[clap(long)]
-	pub print_bir: bool,
+	pub print: Vec<String>,
 }
 
 fn main() {
@@ -32,54 +32,69 @@ fn main() {
 
 	let args = Args::parse();
 
-	let source = std::fs::read_to_string(&args.path).unwrap();
+	let mut scx = session::SessionCtx::default();
+	scx.options.input = args.input;
+	scx.options.output = args.output;
+	scx.options.jit = args.jit;
+	scx.options.print.extend(args.print);
 
-	pipeline(&args, &source);
+	pipeline(&scx);
 }
 
-fn pipeline(args: &Args, source: &str) {
-	let scx = session::SessionCtx::default();
+fn pipeline(scx: &SessionCtx) {
+	let filename = scx.options.input.as_ref().map_or_else(
+		|| {
+			eprintln!("You did not provide a filename!");
+			process::exit(1);
+		},
+		|path| path,
+	);
 
 	let source = scx
 		.source_map
 		.write()
-		.load_source("entry", source.to_owned());
+		.load_source_from_file(filename)
+		.unwrap();
 
 	// parsing source
-	let mut parser = parser::Parser::new(&scx, &source);
+	let mut parser = parser::Parser::new(scx, &source);
 	let ast = match parser.parse_root() {
 		Ok(ast) => ast,
 		Err(diag) => scx.emit_fatal_diagnostic(&diag),
 	};
-	if args.print_ast {
+	if scx.options.print.contains("ast") {
 		println!("{ast:#?}");
 	}
 
 	// lowering to HIR
 	let lcx = lowerer::LowerCtx::new();
 	let hir = lcx.lower_root(&ast);
-	if args.print_hir {
+	if scx.options.print.contains("hir") {
 		println!("{hir:#?}");
 	}
 
 	// type collection, inference and analysis
-	let tcx = ty::TyCtx::new(&scx);
+	let tcx = ty::TyCtx::new(scx);
 
 	let mut cltr = resolve::Collector::new(&tcx);
 	cltr.collect_items(&hir);
 
 	// lower HIR bodies to TBIR
 	// codegen TBIR bodies
-	if args.jit {
-		let mut cgcx = CodeGenCtx::new_jit(&scx, &tcx);
-		let main = cgcx.codegen_root(&hir, &cltr.environment, args.print_tbir, args.print_bir);
+	if scx.options.jit {
+		let mut cgcx = CraneliftBackend::new_jit(&tcx);
+		cgcx.codegen_root(&hir, &cltr.environment);
+
+		let main = cgcx.get_output();
 		let fn_ret = main();
 		tracing::debug!(fn_ret);
 	} else {
-		let mut cgcx = CodeGenCtx::new_object(&scx, &tcx);
-		let object = cgcx.codegen_root(&hir, &cltr.environment, args.print_tbir, args.print_bir);
+		let mut cgcx = CraneliftBackend::new_object(&tcx);
+		cgcx.codegen_root(&hir, &cltr.environment);
+
+		let object = cgcx.get_output();
 		let bytes = object.emit().unwrap();
-		std::fs::write("./out.o", bytes).unwrap();
+		std::fs::write(scx.options.output.as_ref().unwrap(), bytes).unwrap();
 	}
 
 	tracing::info!("Reached pipeline end successfully!");

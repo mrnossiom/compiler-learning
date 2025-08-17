@@ -1,8 +1,20 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
-use cranelift::prelude::*;
+use cranelift::prelude::{isa::TargetIsa, *};
 use cranelift_control::ControlPlane;
+use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_object::{ObjectModule, ObjectProduct};
+
+use crate::{
+	Result, ast,
+	codegen::Backend,
+	hir, lexer,
+	resolve::Environment,
+	session::{SessionCtx, Symbol},
+	tbir,
+	ty::{self, TyCtx},
+};
 
 pub enum KValue {
 	Value(Value),
@@ -21,58 +33,115 @@ impl KValue {
 	}
 }
 
-use crate::{
-	Result, ast,
-	codegen::CodeGen,
-	lexer,
-	session::{SessionCtx, Symbol},
-	tbir, ty,
-};
+pub struct Generator<'tcx, M: Module> {
+	scx: &'tcx SessionCtx,
+	tcx: &'tcx TyCtx<'tcx>,
 
-pub struct Generator<'scx, 'm> {
-	scx: &'scx SessionCtx,
-
-	module: &'m mut dyn Module,
+	module: M,
+	isa: Arc<dyn TargetIsa + 'static>,
 	builder_context: FunctionBuilderContext,
 
 	functions: HashMap<Symbol, FuncId>,
 }
 
-impl<'scx, 'm> Generator<'scx, 'm> {
-	pub fn new(scx: &'scx SessionCtx, module: &'m mut dyn Module) -> Self {
+impl<'tcx, M: Module> Generator<'tcx, M> {
+	pub fn new(tcx: &'tcx TyCtx, isa: Arc<dyn TargetIsa + 'static>, module: M) -> Self {
 		Self {
-			scx,
+			scx: tcx.scx,
+			tcx,
 			module,
+			isa,
 			builder_context: FunctionBuilderContext::new(),
 			functions: HashMap::new(),
 		}
 	}
-}
 
-// Return `None` on non-concrete types (e.g. zst, never)
-fn to_cl_type(output: &ty::TyKind) -> Option<Type> {
-	match &output {
-		ty::TyKind::Unit | ty::TyKind::Never => None,
-		ty::TyKind::Bool => Some(types::I8),
-		ty::TyKind::Integer => Some(types::I32),
-		ty::TyKind::Float => Some(types::F32),
-		ty::TyKind::Str => todo!(),
-		ty::TyKind::Fn(_fn_decl) => todo!(),
-		ty::TyKind::Infer(_, _) => unreachable!(),
+	// Return `None` on non-concrete types (e.g. zst, never)
+	fn to_cl_type(&self, output: &ty::TyKind) -> Option<Type> {
+		match &output {
+			ty::TyKind::Unit | ty::TyKind::Never => None,
+			ty::TyKind::Bool => Some(types::I8),
+			ty::TyKind::Integer => Some(types::I32),
+			ty::TyKind::Float => Some(types::F32),
+			ty::TyKind::Str => todo!(),
+			ty::TyKind::Fn(_fn_decl) => Some(self.isa.pointer_type()),
+			ty::TyKind::Infer(_, _) => unreachable!(),
+		}
 	}
 }
 
-impl Generator<'_, '_> {
+impl<'tcx> Generator<'tcx, JITModule> {
+	pub fn new_jit(tcx: &'tcx TyCtx) -> Self {
+		use ::cranelift::prelude::{Configurable, settings};
+		use cranelift_jit::{JITBuilder, JITModule};
+		use cranelift_module::default_libcall_names;
+
+		let mut flag_builder = settings::builder();
+		flag_builder.set("opt_level", "speed_and_size").unwrap();
+		let isa = cranelift_native::builder()
+			.unwrap()
+			.finish(settings::Flags::new(flag_builder))
+			.unwrap();
+
+		let builder = JITBuilder::with_isa(isa.clone(), default_libcall_names());
+		let module = JITModule::new(builder);
+
+		Self::new(tcx, isa, module)
+	}
+
+	pub fn get_output(&mut self) -> fn() -> i64 {
+		self.module.finalize_definitions().unwrap();
+
+		let main = self.scx.symbols.intern("main");
+		let main_id = self.functions.get(&main).unwrap();
+		let func = self.module.get_finalized_function(*main_id);
+		// TODO: this is unsafe as some functions ask for arguments, and lot a more reasons
+		#[allow(unsafe_code)]
+		let main = unsafe { std::mem::transmute::<*const u8, fn() -> i64>(func) };
+
+		main
+	}
+}
+
+impl<'tcx> Generator<'tcx, ObjectModule> {
+	pub fn new_object(tcx: &'tcx TyCtx) -> Self {
+		use ::cranelift::prelude::{Configurable, settings};
+		use cranelift_module::default_libcall_names;
+		use cranelift_object::{ObjectBuilder, ObjectModule};
+
+		let mut flag_builder = settings::builder();
+		flag_builder.set("opt_level", "speed_and_size").unwrap();
+
+		let isa = cranelift_native::builder()
+			.unwrap()
+			.finish(settings::Flags::new(flag_builder))
+			.unwrap();
+
+		let builder = ObjectBuilder::new(isa.clone(), "out", default_libcall_names()).unwrap();
+
+		// builder.per_function_section(per_function_section) what is this?
+
+		let module = ObjectModule::new(builder);
+
+		Self::new(tcx, isa, module)
+	}
+
+	pub fn get_output(self) -> ObjectProduct {
+		self.module.finish()
+	}
+}
+
+impl<M: Module> Generator<'_, M> {
 	pub fn lower_signature(&mut self, decl: &ty::FnDecl) -> Signature {
 		let mut signature = self.module.make_signature();
 
 		for ty::Param { ident: _, ty } in &decl.inputs {
-			let Some(type_) = to_cl_type(ty) else {
+			let Some(type_) = self.to_cl_type(ty) else {
 				continue;
 			};
 			signature.params.push(AbiParam::new(type_));
 		}
-		if let Some(type_) = to_cl_type(&decl.output) {
+		if let Some(type_) = self.to_cl_type(&decl.output) {
 			signature.returns.push(AbiParam::new(type_));
 		}
 
@@ -85,7 +154,7 @@ impl Generator<'_, '_> {
 		decl: &ty::FnDecl,
 		linkage: Linkage,
 	) -> Result<FuncId> {
-		if let Some(_) = self.functions.get(&name) {
+		if self.functions.contains_key(&name) {
 			return Err("already defined");
 		}
 
@@ -102,8 +171,45 @@ impl Generator<'_, '_> {
 	}
 }
 
-impl CodeGen for Generator<'_, '_> {
+impl<M: Module> Backend for Generator<'_, M> {
 	type FuncId = FuncId;
+
+	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment) {
+		let mut id_map = HashMap::new();
+
+		for item in hir.items {
+			match item.kind {
+				hir::ItemKind::Extern { ident, decl } => {
+					// TODO: do this elsewhere
+					let decl = self.tcx.lower_fn_decl(decl);
+					self.declare_extern(ident.name, &decl).unwrap();
+				}
+				hir::ItemKind::Function { ident, decl, .. } => {
+					// TODO: do this elsewhere
+					let decl = self.tcx.lower_fn_decl(decl);
+					let func_id = self.declare_function(ident.name, &decl).unwrap();
+
+					id_map.insert(ident.name, func_id);
+				}
+			}
+		}
+		for item in hir.items {
+			match item.kind {
+				hir::ItemKind::Extern { .. } => {}
+				hir::ItemKind::Function { ident, decl, body } => {
+					// TODO: do this elsewhere
+					let decl = self.tcx.lower_fn_decl(decl);
+
+					let body = self.tcx.typeck_fn(ident, &decl, body, env);
+					if self.scx.options.print.contains("tbir") {
+						println!("{body:#?}");
+					}
+					let func_id = id_map.get(&ident.name).unwrap();
+					self.define_function(*func_id, &decl, &body).unwrap();
+				}
+			}
+		}
+	}
 
 	#[tracing::instrument(level = "debug", skip(self, decl))]
 	fn declare_extern(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<()> {
@@ -122,12 +228,18 @@ impl CodeGen for Generator<'_, '_> {
 		func_id: Self::FuncId,
 		decl: &ty::FnDecl,
 		body: &tbir::Block,
-		print_bir: bool,
 	) -> Result<()> {
 		let mut context = self.module.make_context();
 
 		// TODO: this computes the signature a second time after declaration
 		context.func.signature = self.lower_signature(decl);
+
+		let params = decl
+			.inputs
+			.iter()
+			// skip zst
+			.filter_map(|param| self.to_cl_type(&param.ty).map(|ty| (param.ident, ty)))
+			.collect::<Vec<_>>();
 
 		let mut builder = FunctionBuilder::new(&mut context.func, &mut self.builder_context);
 
@@ -137,13 +249,7 @@ impl CodeGen for Generator<'_, '_> {
 		builder.seal_block(entry_block);
 
 		let mut values = HashMap::new();
-		for (i, (ident, ty)) in decl
-			.inputs
-			.iter()
-			// skip zst
-			.filter_map(|param| to_cl_type(&param.ty).map(|ty| (param.ident, ty)))
-			.enumerate()
-		{
+		for (i, (ident, ty)) in params.into_iter().enumerate() {
 			let value = builder.block_params(entry_block)[i];
 
 			let variable = builder.declare_var(ty);
@@ -157,7 +263,8 @@ impl CodeGen for Generator<'_, '_> {
 
 			builder,
 			functions: &self.functions,
-			module: self.module,
+			module: &mut self.module,
+			isa: self.isa.clone(),
 			values,
 
 			loops: Vec::default(),
@@ -172,7 +279,7 @@ impl CodeGen for Generator<'_, '_> {
 			.optimize(self.module.isa(), &mut ControlPlane::default())
 			.unwrap();
 
-		if print_bir {
+		if self.scx.options.print.contains("bir") {
 			print!("{}", context.func.display());
 		}
 
@@ -190,6 +297,7 @@ pub struct FunctionGenerator<'scx, 'bld> {
 	builder: FunctionBuilder<'bld>,
 	functions: &'bld HashMap<Symbol, FuncId>,
 	module: &'bld mut dyn Module,
+	isa: Arc<dyn TargetIsa + 'static>,
 	values: HashMap<Symbol, Option<Variable>>,
 
 	loops: Vec<(Block, Block)>,
@@ -197,6 +305,19 @@ pub struct FunctionGenerator<'scx, 'bld> {
 
 /// Codegen tbir structs
 impl FunctionGenerator<'_, '_> {
+	// TODO: remove duplicate
+	fn to_cl_type(&self, output: &ty::TyKind) -> Option<Type> {
+		match &output {
+			ty::TyKind::Unit | ty::TyKind::Never => None,
+			ty::TyKind::Bool => Some(types::I8),
+			ty::TyKind::Integer => Some(types::I32),
+			ty::TyKind::Float => Some(types::F32),
+			ty::TyKind::Str => todo!(),
+			ty::TyKind::Fn(_fn_decl) => Some(self.isa.pointer_type()),
+			ty::TyKind::Infer(_, _) => unreachable!(),
+		}
+	}
+
 	fn codegen_block(&mut self, block: &tbir::Block) -> Result<KValue> {
 		tracing::trace!(id = ?block.id, "codegen_block");
 
@@ -223,7 +344,7 @@ impl FunctionGenerator<'_, '_> {
 			},
 			tbir::StmtKind::Let { ident, value, .. } => match self.codegen_expr(value)? {
 				KValue::Value(expr_value) => {
-					let ty = to_cl_type(&value.ty).unwrap();
+					let ty = self.to_cl_type(&value.ty).unwrap();
 					let variable = self.builder.declare_var(ty);
 					self.builder.def_var(variable, expr_value);
 
@@ -277,10 +398,12 @@ impl FunctionGenerator<'_, '_> {
 			tbir::ExprKind::Literal(lit, sym) => {
 				let sym = self.scx.symbols.resolve(*sym);
 				let value = match lit {
-					lexer::LiteralKind::Integer => self
-						.builder
-						.ins()
-						.iconst(to_cl_type(&expr.ty).unwrap(), sym.parse::<i64>().unwrap()),
+					lexer::LiteralKind::Integer => {
+						let int_ty = self.to_cl_type(&expr.ty).unwrap();
+						self.builder
+							.ins()
+							.iconst(int_ty, sym.parse::<i64>().unwrap())
+					}
 					lexer::LiteralKind::Float => {
 						self.builder.ins().f64const(sym.parse::<f64>().unwrap())
 					}
@@ -439,7 +562,7 @@ impl FunctionGenerator<'_, '_> {
 			KValue::Zst | KValue::Never => panic!(),
 		};
 
-		if let Some(ty) = to_cl_type(&conseq.ty) {
+		if let Some(ty) = self.to_cl_type(&conseq.ty) {
 			self.builder.append_block_param(cont_block, ty);
 		}
 

@@ -13,7 +13,7 @@ use crate::{
 
 #[derive(Debug)]
 pub struct TyCtx<'scx> {
-	scx: &'scx SessionCtx,
+	pub scx: &'scx SessionCtx,
 
 	infer_tag_count: AtomicU32,
 }
@@ -423,7 +423,11 @@ impl Inferer<'_> {
 	fn build_stmt(&self, stmt: &hir::Stmt<'_>) -> tbir::Stmt {
 		let kind = match stmt.kind {
 			hir::StmtKind::Expr(expr) => tbir::StmtKind::Expr(self.build_expr(expr)),
-			hir::StmtKind::Let { ident, ty, value } => tbir::StmtKind::Let {
+			hir::StmtKind::Let {
+				ident,
+				ty: _,
+				value,
+			} => tbir::StmtKind::Let {
 				ident,
 				value: self.build_expr(value),
 			},

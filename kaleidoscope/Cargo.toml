@@ -4,6 +4,7 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
+ariadne = "0.5"
 bumpalo = "3"
 clap = { version = "4", features = ["derive"] }
 index_vec = "0.1"
@@ -21,15 +22,17 @@ cranelift-native = { version = "0.122", optional = true }
 cranelift-object = { version = "0.122", optional = true }
 target-lexicon = { version = "0.13", optional = true }
 
-# LLVM Backend (broken)
+# LLVM Backend
 inkwell = { version = "0.6", features = ["llvm18-1"], optional = true }
 
 [dev-dependencies]
 insta = "1"
 
+[patch.crates-io]
+ariadne = { git = "https://github.com/mrnossiom/ariadne", branch = "expose-report-fields" }
+
 [features]
-# default = ["llvm"]
-default = ["cranelift"]
+default = ["llvm", "cranelift"]
 
 debug = []
 

@@ -2,6 +2,8 @@
 
 use std::mem;
 
+use ariadne::{Label, Report, ReportKind};
+
 #[allow(clippy::enum_glob_use)]
 use crate::lexer::{BinOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*};
 use crate::{
@@ -66,15 +68,18 @@ impl Parser<'_> {
 		}
 	}
 
+	#[track_caller]
 	fn expect(&mut self, token: TokenKind) -> PResult<Token> {
 		if self.check(token) {
 			self.bump();
 			Ok(self.token)
 		} else {
-			Err(Diagnostic::new_err(
-				format!("expected kind {token:?}, got {:?}", self.token),
-				self.token.span,
-			))
+			let report = Report::build(ReportKind::Error, self.token.span)
+				.with_message(format!("expected kind {token:?}"))
+				.with_label(
+					Label::new(self.token.span).with_message(format!("got {:?}", self.token)),
+				);
+			Err(Diagnostic::new(report))
 		}
 	}
 
@@ -86,10 +91,12 @@ impl Parser<'_> {
 
 	fn expect_ident(&mut self) -> PResult<Ident> {
 		self.eat_ident().ok_or_else(|| {
-			Diagnostic::new_err(
-				format!("expected an ident, got {:?}", self.token),
-				self.token.span,
-			)
+			let report = Report::build(ReportKind::Error, self.token.span)
+				.with_message(format!("expected an ident"))
+				.with_label(
+					Label::new(self.token.span).with_message(format!("got {:?}", self.token)),
+				);
+			Diagnostic::new(report)
 		})
 	}
 
@@ -180,11 +187,14 @@ impl Parser<'_> {
 			Keyword(Break) => self.parse_break()?,
 			Keyword(Continue) => self.parse_continue()?,
 
-			ukn => {
-				return Err(Diagnostic::new_err(
-					format!("unexpected `{ukn:?}` token, expected an expression"),
-					self.token.span,
-				));
+			_ => {
+				let report = Report::build(ReportKind::Error, self.token.span)
+					.with_message(format!("expected an expression"))
+					.with_label(
+						Label::new(self.token.span)
+							.with_message(format!("got an unexpected token")),
+					);
+				return Err(Diagnostic::new(report));
 			}
 		};
 
@@ -303,16 +313,14 @@ impl Parser<'_> {
 			Keyword(Fn) => self.parse_fn()?,
 			Keyword(Extern) => self.parse_extern_fn()?,
 			Eof => {
-				return Err(Diagnostic::new_err(
-					"no expression entered".into(),
-					self.token.span,
-				));
+				let report = Report::build(ReportKind::Error, self.token.span)
+					.with_message("no expression entered");
+				return Err(Diagnostic::new(report));
 			}
 			_ => {
-				return Err(Diagnostic::new_err(
-					"could not parse item".into(),
-					self.token.span,
-				));
+				let report = Report::build(ReportKind::Error, self.token.span)
+					.with_message("could not parse item");
+				return Err(Diagnostic::new(report));
 			}
 		};
 		Ok(Item {
@@ -452,10 +460,10 @@ impl Parser<'_> {
 			TokenKind::Ident(_) if self.look_ahead() == Eq => self.parse_assign_stmt()?,
 
 			Eof => {
-				return Err(Diagnostic::new_err(
-					"expected more input".into(),
-					self.token.span,
-				));
+				let report = Report::build(ReportKind::Error, self.token.span)
+					.with_message("expected more input")
+					.with_label(Label::new(self.token.span).with_message("here"));
+				return Err(Diagnostic::new(report));
 			}
 			_ => {
 				let expr = Box::new(self.parse_expr()?);

@@ -128,7 +128,7 @@ impl<'lcx> Lowerer<'lcx> {
 				},
 				// desugar to simple loop
 				ast::StmtKind::WhileLoop { check, body } => self.lower_while_loop(check, body),
-				ast::StmtKind::ForLoop { pat, iter, body } => todo!(),
+				ast::StmtKind::ForLoop { .. } => todo!("for loop"),
 
 				ast::StmtKind::Let { ident, ty, value } => StmtKind::Let {
 					ident: *ident,
@@ -155,9 +155,11 @@ impl<'lcx> Lowerer<'lcx> {
 					let expr = self.alloc(self.lower_expr(expr));
 					if tail.is_empty() {
 						ret = Some(expr);
-						continue;
+						break;
+					} else {
+						// accept expr to recover but send error diag
+						todo!("accept otherwise? or error?, {stmt:?} and {tail:?}")
 					}
-					todo!("accept otherwise? or error?, {stmt:?} and {tail:?}")
 				}
 
 				ast::StmtKind::Empty => continue,

@@ -1,21 +1,6 @@
 extern fn putchard(c: uint);
 
-fn hello_world() {
-	putchard(72);
-	putchard(101);
-	putchard(108);
-	putchard(108);
-	putchard(111);
-	putchard(44);
-	putchard(32);
-	putchard(87);
-	putchard(111);
-	putchard(114);
-	putchard(108);
-	putchard(100);
-	putchard(33);
-	putchard(10);
-}
+fn hello_world() { }
 
 fn main() {
 	hello_world();

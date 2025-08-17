@@ -72,6 +72,7 @@ pub enum StmtKind<'lcx> {
 
 	Let {
 		ident: ast::Ident,
+		// Hinted ty
 		ty: &'lcx ast::Ty,
 		value: &'lcx Expr<'lcx>,
 	},

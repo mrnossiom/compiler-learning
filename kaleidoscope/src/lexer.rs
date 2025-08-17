@@ -3,7 +3,7 @@
 use std::str::Chars;
 
 use crate::ast::Ident;
-use crate::session::{SessionCtx, Span, Symbol};
+use crate::session::{BytePos, SessionCtx, Span, Symbol};
 
 #[allow(clippy::enum_glob_use)]
 use self::{BinOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*};
@@ -162,21 +162,21 @@ pub struct Lexer<'scx, 'src> {
 	source: &'src str,
 	chars: Chars<'src>,
 	token: Option<char>,
-	offset: usize,
+	offset: BytePos,
 
 	next_glued: Option<Token>,
 }
 
 impl<'scx, 'src> Lexer<'scx, 'src> {
 	#[must_use]
-	pub fn new(scx: &'scx SessionCtx, source: &'src str, offset: u32) -> Self {
+	pub fn new(scx: &'scx SessionCtx, source: &'src str, offset: BytePos) -> Self {
 		let chars = source.chars();
 		Self {
 			scx,
 			source,
 			chars,
 			token: None,
-			offset: usize::try_from(offset).unwrap(),
+			offset,
 
 			next_glued: None,
 		}
@@ -184,7 +184,7 @@ impl<'scx, 'src> Lexer<'scx, 'src> {
 
 	fn bump(&mut self) -> Option<char> {
 		self.token = self.chars.next();
-		self.offset += self.token.map_or(0, char::len_utf8);
+		self.offset = self.offset + BytePos::from_usize(self.token.map_or(0, char::len_utf8));
 		self.token
 	}
 
@@ -199,12 +199,12 @@ impl<'scx, 'src> Lexer<'scx, 'src> {
 		}
 	}
 
-	fn str_from_to(&self, start: usize, end: usize) -> &str {
-		&self.source[start..end]
+	fn str_from_to(&self, start: BytePos, end: BytePos) -> &str {
+		&self.source[start.to_usize()..end.to_usize()]
 	}
 
-	fn str_from(&self, start: usize) -> &str {
-		&self.source[start..self.offset]
+	fn str_from(&self, start: BytePos) -> &str {
+		&self.source[start.to_usize()..self.offset.to_usize()]
 	}
 
 	fn is_eof(&self) -> bool {
@@ -269,7 +269,10 @@ impl Lexer<'_, '_> {
 					}
 
 					// strip quotes
-					let symbol = self.str_from_to(start + 1, self.offset - 1);
+					let symbol = self.str_from_to(
+						start + BytePos::from_u32(1),
+						self.offset - BytePos::from_u32(1),
+					);
 					Literal(Str, self.scx.symbols.intern(symbol))
 				}
 
@@ -322,10 +325,7 @@ impl Lexer<'_, '_> {
 				_ => Unknown,
 			};
 
-			let span = Span::new(
-				u32::try_from(start).unwrap(),
-				u32::try_from(self.offset).unwrap(),
-			);
+			let span = Span::new(start, self.offset);
 			let token = Token { kind, span };
 			return Some((token, spacing));
 		}

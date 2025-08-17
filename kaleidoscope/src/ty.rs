@@ -4,7 +4,8 @@ use std::{
 };
 
 use crate::{
-	ast, hir, lexer,
+	ast::{self, Ident},
+	hir, lexer,
 	resolve::Environment,
 	session::{SessionCtx, Symbol},
 	tbir,
@@ -30,9 +31,10 @@ impl<'scx> TyCtx<'scx> {
 /// Context actions
 impl TyCtx<'_> {
 	#[must_use]
-	#[tracing::instrument(level = "debug", skip_all)]
+	#[tracing::instrument(level = "trace", skip(self, decl, body, env))]
 	pub fn typeck_fn(
 		&self,
+		name: Ident,
 		decl: &FnDecl,
 		body: &hir::Block<'_>,
 		env: &Environment,
@@ -252,7 +254,9 @@ impl Inferer<'_> {
 				self.unify(&conseq_ty, &altern_ty)
 			}
 
-			hir::ExprKind::Break(_) | hir::ExprKind::Continue => TyKind::Never,
+			hir::ExprKind::Return(_) | hir::ExprKind::Break(_) | hir::ExprKind::Continue => {
+				TyKind::Never
+			}
 		};
 
 		// TODO
@@ -265,7 +269,7 @@ impl Inferer<'_> {
 /// Unification
 impl Inferer<'_> {
 	fn unify(&mut self, expected: &TyKind<Infer>, actual: &TyKind<Infer>) -> TyKind<Infer> {
-		tracing::debug!(?expected, ?actual, "unify");
+		tracing::trace!(?expected, ?actual, "unify");
 		match (expected, actual) {
 			(TyKind::Infer(tag, infer), ty) | (ty, TyKind::Infer(tag, infer)) => {
 				self.unify_infer(*tag, *infer, ty)
@@ -279,7 +283,7 @@ impl Inferer<'_> {
 	}
 
 	fn unify_infer(&mut self, tag: InferTag, infer: Infer, other: &TyKind<Infer>) -> TyKind<Infer> {
-		tracing::debug!(?tag, ?infer, ?other, "unify infer");
+		tracing::trace!(?tag, ?infer, ?other, "unify_infer");
 		let unified = match (infer, other) {
 			(Infer::Integer, TyKind::Integer) => TyKind::Integer,
 			(Infer::Float, TyKind::Float) => TyKind::Float,
@@ -304,9 +308,8 @@ impl Inferer<'_> {
 		unified
 	}
 
+	#[tracing::instrument(level = "trace", skip(self), ret)]
 	fn resolve_ty(&self, id: hir::NodeId) -> TyKind {
-		tracing::debug!(?id, "resolve ty");
-
 		let mut tag = match self.expr_type.get(&id).cloned().unwrap().as_no_infer() {
 			Ok(ty) => return ty,
 			Err((tag, _)) => tag,
@@ -461,9 +464,13 @@ impl Inferer<'_> {
 				conseq: Box::new(self.build_block(conseq)),
 				altern: altern.map(|altern| Box::new(self.build_block(altern))),
 			},
+			hir::ExprKind::Return(expr) => {
+				tbir::ExprKind::Return(expr.map(|expr| Box::new(self.build_expr(expr))))
+			}
 			hir::ExprKind::Break(expr) => {
 				tbir::ExprKind::Break(expr.map(|expr| Box::new(self.build_expr(expr))))
 			}
+
 			hir::ExprKind::Continue => tbir::ExprKind::Continue,
 		};
 

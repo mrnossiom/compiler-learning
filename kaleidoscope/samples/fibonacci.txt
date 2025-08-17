@@ -21,9 +21,38 @@ fn print_num_rev(n: uint) {
 			putchard(num_to_ascii(rest));
 		}
 	};
-	// newline
-	putchard(10);
 }
+
+fn print_num(n: uint) {
+    if n == 0 {
+        putchard(num_to_ascii(0));
+        return
+    };
+
+    // Calculate the divisor to get the most significant digit
+    divisor := 1;
+    temp := n;
+    while temp >= 10 {
+        temp = temp / 10;
+        divisor = divisor * 10;
+    };
+
+    // Reset temp to original number
+    temp = n;
+
+    // Print each digit from most to least significant
+    while divisor > 0 {
+        digit := temp / divisor;  // Get the current most significant digit
+        putchard(num_to_ascii(digit));
+        
+        // Remove the most significant digit
+        temp = temp % divisor;
+        
+        // Reduce divisor
+        divisor = divisor / 10;
+    };
+}
+
 
 fn fibo(n: uint) uint {
 	a := 0;
@@ -41,11 +70,13 @@ fn fibo(n: uint) uint {
 }
 
 fn main() {
-	n := 10;
-	while n != 0 {
+	n := 0;
+	while n != 10 {
 		res := fibo(n);
-		print_num_rev(res);
+		print_num(res);
+		// newline
+		putchard(10);
 		
-		n = n - 1;
+		n = n + 1;
 	}
 }

@@ -76,6 +76,10 @@ pub enum ExprKind {
 		conseq: Box<Block>,
 		altern: Option<Box<Block>>,
 	},
+
+	Return(Option<Box<Expr>>),
+	Break(Option<Box<Expr>>),
+	Continue,
 }
 
 #[derive(Debug)]

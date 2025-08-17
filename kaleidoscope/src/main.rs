@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use kaleidoscope::{
+use kaleic::{
 	codegen::{self, CodeGen},
 	hir, lowerer, parser, resolve, session, ty,
 };
@@ -18,6 +18,11 @@ struct Args {
 	pub print_ast: bool,
 	#[clap(long)]
 	pub print_hir: bool,
+	#[clap(long)]
+	pub print_tbir: bool,
+	/// Print Backend IR
+	#[clap(long)]
+	pub print_bir: bool,
 }
 
 fn main() {
@@ -25,6 +30,7 @@ fn main() {
 		.with_env_filter(EnvFilter::from_default_env())
 		.with_timer(time::Uptime::default())
 		.with_span_events(FmtSpan::ENTER)
+		.with_writer(std::io::stderr)
 		.init();
 
 	let args = Args::parse();
@@ -43,6 +49,7 @@ fn pipeline(args: &Args, source: &str) {
 		.load_source("entry", source.to_owned());
 
 	// parsing source
+	tracing::debug!("parsing");
 	let ast = match parser::Parser::new(&scx, &source).parse_file() {
 		Ok(ast) => ast,
 		Err(diag) => {
@@ -55,6 +62,7 @@ fn pipeline(args: &Args, source: &str) {
 	}
 
 	// lowering to HIR
+	tracing::debug!("lowering ast to hir");
 	let lcx = lowerer::LowerCtx::new();
 	let hir = lcx.lower_root(&ast);
 	if args.print_hir {
@@ -65,6 +73,7 @@ fn pipeline(args: &Args, source: &str) {
 	let tcx = ty::TyCtx::new(&scx);
 
 	let mut cltr = resolve::Collector::new(&tcx);
+	tracing::debug!("collecting items");
 	cltr.collect_hir(&hir);
 
 	// TODO: lower HIR bodies to TBIR
@@ -90,9 +99,13 @@ fn pipeline(args: &Args, source: &str) {
 				// TODO: do this elsewhere
 				let decl = tcx.lower_fn_decl(decl);
 
-				tracing::debug!(?ident, "before typeck fn");
-				let body = tcx.typeck_fn(&decl, body, &cltr.environment);
-				let fn_ = generator.function(ident.name, &decl, &body).unwrap();
+				let body = tcx.typeck_fn(ident, &decl, body, &cltr.environment);
+				if args.print_tbir {
+					println!("{body:#?}");
+				}
+				let fn_ = generator
+					.function(ident.name, &decl, &body, args.print_bir)
+					.unwrap();
 
 				if scx.symbols.resolve(ident.name) == "main" {
 					main = Some(fn_);

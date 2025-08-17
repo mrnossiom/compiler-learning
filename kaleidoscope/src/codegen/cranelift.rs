@@ -115,12 +115,13 @@ impl CodeGen for Generator<'_> {
 		Ok(())
 	}
 
-	#[tracing::instrument(level = "debug", skip(self, decl, body))]
+	#[tracing::instrument(level = "debug", skip(self, decl, body, print_bir))]
 	fn function(
 		&mut self,
 		name: Symbol,
 		decl: &ty::FnDecl,
 		body: &tbir::Block,
+		print_bir: bool,
 	) -> Result<Self::Fn> {
 		let mut context = self.module.make_context();
 
@@ -179,7 +180,7 @@ impl CodeGen for Generator<'_> {
 				generator.builder.ins().return_(&[]);
 			}
 			KValue::Never => {}
-		};
+		}
 
 		generator.builder.finalize();
 
@@ -187,7 +188,9 @@ impl CodeGen for Generator<'_> {
 			.optimize(self.module.isa(), &mut ControlPlane::default())
 			.unwrap();
 
-		print!("{}", context.func.display());
+		if print_bir {
+			print!("{}", context.func.display());
+		}
 
 		self.module.define_function(func_id, &mut context).unwrap();
 		self.module.clear_context(&mut context);
@@ -243,7 +246,7 @@ pub struct FunctionGenerator<'scx, 'bld> {
 /// Codegen tbir structs
 impl FunctionGenerator<'_, '_> {
 	fn codegen_block(&mut self, block: &tbir::Block) -> Result<KValue> {
-		tracing::debug!(id=?block.id, "codegen block");
+		tracing::trace!(id = ?block.id, "codegen_block");
 
 		for stmt in &block.stmts {
 			self.codegen_stmt(stmt)?;
@@ -257,6 +260,7 @@ impl FunctionGenerator<'_, '_> {
 	}
 
 	fn codegen_stmt(&mut self, stmt: &tbir::Stmt) -> Result<()> {
+		tracing::trace!(id = ?stmt.id, "codegen_stmt");
 		match &stmt.kind {
 			tbir::StmtKind::Expr(expr) => {
 				self.codegen_expr(expr)?;
@@ -276,7 +280,7 @@ impl FunctionGenerator<'_, '_> {
 						self.values.insert(ident.name, None);
 					}
 					KValue::Never => {}
-				};
+				}
 				Ok(())
 			}
 			tbir::StmtKind::Assign { target, value } => {
@@ -289,9 +293,8 @@ impl FunctionGenerator<'_, '_> {
 					KValue::Value(expr_value) => {
 						self.builder.def_var(variable, expr_value);
 					}
-					KValue::Zst => {}
-					KValue::Never => {}
-				};
+					KValue::Zst | KValue::Never => {}
+				}
 				Ok(())
 			}
 			tbir::StmtKind::Loop { block } => {
@@ -319,6 +322,7 @@ impl FunctionGenerator<'_, '_> {
 	}
 
 	fn codegen_expr(&mut self, expr: &tbir::Expr) -> Result<KValue> {
+		tracing::trace!(id = ?expr.id, "codegen_expr");
 		let value = match &expr.kind {
 			tbir::ExprKind::Literal(lit, sym) => {
 				let sym = self.scx.symbols.resolve(*sym);
@@ -380,6 +384,23 @@ impl FunctionGenerator<'_, '_> {
 				conseq,
 				altern,
 			} => self.codegen_if(cond, conseq, altern.as_deref())?,
+			tbir::ExprKind::Return(expr) => {
+				if let Some(expr) = expr {
+					match self.codegen_expr(expr)? {
+						KValue::Value(expr_value) => {
+							self.builder.ins().return_(&[expr_value]);
+						}
+						KValue::Zst => {
+							self.builder.ins().return_(&[]);
+						}
+						KValue::Never => {}
+					}
+				} else {
+					self.builder.ins().return_(&[]);
+				}
+
+				KValue::Never
+			}
 			tbir::ExprKind::Break(expr) => {
 				let (_, cont) = *self.loops.last().unwrap();
 
@@ -419,6 +440,7 @@ impl FunctionGenerator<'_, '_> {
 		left: &tbir::Expr,
 		right: &tbir::Expr,
 	) -> Result<Value> {
+		tracing::trace!("codegen_binop");
 		// cannot be zst
 		let lhs = self.codegen_expr(left)?;
 		let rhs = self.codegen_expr(right)?;
@@ -458,15 +480,15 @@ impl FunctionGenerator<'_, '_> {
 		conseq: &tbir::Block,
 		altern: Option<&tbir::Block>,
 	) -> Result<KValue> {
+		let then_block = self.builder.create_block();
+		let else_block = altern.as_ref().map(|_| self.builder.create_block());
+		let cont_block = self.builder.create_block();
+		tracing::trace!(?then_block, ?else_block, ?cont_block, "codegen_if");
+
 		let condition = match self.codegen_expr(cond)? {
 			KValue::Value(val) => val,
 			KValue::Zst | KValue::Never => panic!(),
 		};
-
-		let then_block = self.builder.create_block();
-		let else_block = altern.as_ref().map(|_| self.builder.create_block());
-		let cont_block = self.builder.create_block();
-		tracing::debug!(?then_block, ?else_block, ?cont_block, "codegen if");
 
 		if let Some(ty) = to_cl_type(&conseq.ty) {
 			self.builder.append_block_param(cont_block, ty);

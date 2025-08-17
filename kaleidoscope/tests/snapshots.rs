@@ -1,4 +1,4 @@
-use kaleidoscope::{lowerer, parser, session};
+use kaleic::{lowerer, parser, session};
 
 #[test]
 fn fibo() {

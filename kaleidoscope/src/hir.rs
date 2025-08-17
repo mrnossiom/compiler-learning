@@ -112,6 +112,7 @@ pub enum ExprKind<'lcx> {
 		altern: Option<&'lcx Block<'lcx>>,
 	},
 
+	Return(Option<&'lcx Expr<'lcx>>),
 	Break(Option<&'lcx Expr<'lcx>>),
 	// TODO: add scope label
 	Continue,

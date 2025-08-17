@@ -14,8 +14,13 @@ pub trait CodeGen {
 	type Fn;
 
 	fn extern_(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<()>;
-	fn function(&mut self, name: Symbol, decl: &ty::FnDecl, body: &tbir::Block)
-	-> Result<Self::Fn>;
+	fn function(
+		&mut self,
+		name: Symbol,
+		decl: &ty::FnDecl,
+		body: &tbir::Block,
+		print_bir: bool,
+	) -> Result<Self::Fn>;
 
 	fn call_fn(&mut self, func: Self::Fn) -> Result<i64>;
 }

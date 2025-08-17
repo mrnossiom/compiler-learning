@@ -102,6 +102,10 @@ pub enum Keyword {
 	While,
 	For,
 	In,
+
+	Return,
+	Break,
+	Continue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +234,10 @@ impl Lexer<'_, '_> {
 						"while" => Keyword(While),
 						"for" => Keyword(For),
 						"in" => Keyword(In),
+
+						"return" => Keyword(Return),
+						"break" => Keyword(Break),
+						"continue" => Keyword(Continue),
 
 						ident => TokenKind::Ident(self.scx.symbols.intern(ident)),
 					}

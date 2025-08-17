@@ -60,6 +60,7 @@ pub enum ExprKind {
 		altern: Option<Box<Block>>,
 	},
 
+	Return(Option<Box<Expr>>),
 	Break(Option<Box<Expr>>),
 	// TODO: add scope label
 	Continue,

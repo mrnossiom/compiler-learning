@@ -72,15 +72,6 @@ impl<'lcx> Lowerer<'lcx> {
 	{
 		self.tcx.arena.alloc_slice_fill_iter(i)
 	}
-
-	fn mk_expr_block(&self, expr: &'lcx Expr<'lcx>) -> Block<'lcx> {
-		Block {
-			stmts: self.alloc([]),
-			ret: Some(expr),
-			span: expr.span,
-			id: self.make_new_node_id(),
-		}
-	}
 }
 
 impl<'lcx> Lowerer<'lcx> {
@@ -192,20 +183,35 @@ impl<'lcx> Lowerer<'lcx> {
 
 	/// Lower an AST `while cond { body }` to an HIR `loop { if cond { body } else { break } }`
 	fn lower_while_loop(&self, cond: &'lcx ast::Expr, body: &'lcx ast::Block) -> StmtKind<'lcx> {
-		let if_expr = ExprKind::If {
-			cond: self.alloc(self.lower_expr(cond)),
-			conseq: self.alloc(self.lower_block(body)),
-			altern: Some(self.alloc(self.mk_expr_block(self.alloc(Expr {
-				kind: ExprKind::Break(None),
-				span: body.span,
-				id: self.make_new_node_id(),
-			})))),
-		};
-		let loop_blk = self.mk_expr_block(self.alloc(Expr {
-			kind: if_expr,
+		let break_expr = Expr {
+			kind: ExprKind::Break(None),
 			span: body.span,
 			id: self.make_new_node_id(),
-		}));
+		};
+		let altern_blk = Block {
+			stmts: self.alloc_iter([]),
+			ret: Some(self.alloc(break_expr)),
+			span: body.span,
+			id: self.make_new_node_id(),
+		};
+
+		let if_expr = Expr {
+			kind: ExprKind::If {
+				cond: self.alloc(self.lower_expr(cond)),
+				conseq: self.alloc(self.lower_block(body)),
+				altern: Some(self.alloc(altern_blk)),
+			},
+			span: body.span,
+			id: self.make_new_node_id(),
+		};
+		let loop_blk = Block {
+			stmts: self.alloc_iter([]),
+			ret: Some(self.alloc(if_expr)),
+
+			span: body.span,
+			id: self.make_new_node_id(),
+		};
+
 		StmtKind::Loop {
 			block: self.alloc(loop_blk),
 		}
@@ -232,6 +238,14 @@ impl<'lcx> Lowerer<'lcx> {
 				conseq: self.alloc(self.lower_block(conseq)),
 				altern: altern.as_ref().map(|a| self.alloc(self.lower_block(a))),
 			},
+
+			ast::ExprKind::Return(expr) => {
+				ExprKind::Return(expr.as_ref().map(|expr| self.alloc(self.lower_expr(&expr))))
+			}
+			ast::ExprKind::Break(expr) => {
+				ExprKind::Break(expr.as_ref().map(|expr| self.alloc(self.lower_expr(&expr))))
+			}
+			ast::ExprKind::Continue => ExprKind::Continue,
 		};
 
 		Expr {

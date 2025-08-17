@@ -11,6 +11,17 @@ pub enum KValue {
 	Never,
 }
 
+impl KValue {
+	// surely the worst name ever given to a function
+	fn value_as_slice<T>(self, func: impl FnOnce(&[Value]) -> T) {
+		match self {
+			Self::Value(val) => _ = func(&[val]),
+			Self::Zst => _ = func(&[]),
+			Self::Never => {}
+		}
+	}
+}
+
 use crate::{
 	Result, ast,
 	codegen::CodeGen,
@@ -23,15 +34,15 @@ pub struct Generator<'scx> {
 	scx: &'scx SessionCtx,
 
 	builder_context: FunctionBuilderContext,
-	functions: HashMap<Symbol, CompiledFunction>,
+	functions: HashMap<Symbol, FuncId>,
 	module: JITModule,
-	variable_generator: VariableGenerator,
 }
 
 impl<'scx> Generator<'scx> {
 	pub fn new(scx: &'scx SessionCtx) -> Self {
 		let mut flag_builder = settings::builder();
 		flag_builder.set("opt_level", "speed_and_size").unwrap();
+
 		let isa = cranelift_native::builder()
 			.unwrap()
 			.finish(settings::Flags::new(flag_builder))
@@ -46,7 +57,6 @@ impl<'scx> Generator<'scx> {
 			builder_context: FunctionBuilderContext::new(),
 			functions: HashMap::new(),
 			module: JITModule::new(builder),
-			variable_generator: VariableGenerator::default(),
 		}
 	}
 }
@@ -54,8 +64,7 @@ impl<'scx> Generator<'scx> {
 // Return `None` on non-concrete types (e.g. zst, never)
 fn to_cl_type(output: &ty::TyKind) -> Option<Type> {
 	match &output {
-		ty::TyKind::Unit => None,
-		ty::TyKind::Never => None,
+		ty::TyKind::Unit | ty::TyKind::Never => None,
 		ty::TyKind::Bool => Some(types::I8),
 		ty::TyKind::Integer => Some(types::I32),
 		ty::TyKind::Float => Some(types::F32),
@@ -91,14 +100,7 @@ impl Generator<'_> {
 					.declare_function(&func_name, linkage, &signature)
 					.unwrap();
 
-				self.functions.insert(
-					name,
-					CompiledFunction {
-						defined: false,
-						id: func_id,
-						param_count: decl.inputs.len(),
-					},
-				);
+				self.functions.insert(name, func_id);
 				Ok((func_id, signature))
 			}
 			Some(_) => Err("already defined"),
@@ -107,26 +109,31 @@ impl Generator<'_> {
 }
 
 impl CodeGen for Generator<'_> {
-	type Fn = fn() -> i64;
+	// HACK: compute signature elsewhere
+	type FuncId = (FuncId, Signature);
 
 	#[tracing::instrument(level = "debug", skip(self, decl))]
-	fn extern_(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<()> {
-		self.declare_func(name, decl, Linkage::Import)?;
+	fn declare_extern(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<()> {
+		let (func_id, signature) = self.declare_func(name, decl, Linkage::Import)?;
 		Ok(())
 	}
 
-	#[tracing::instrument(level = "debug", skip(self, decl, body, print_bir))]
-	fn function(
+	#[tracing::instrument(level = "debug", skip(self, decl))]
+	fn declare_function(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<Self::FuncId> {
+		let (func_id, signature) = self.declare_func(name, decl, Linkage::Export)?;
+		Ok((func_id, signature))
+	}
+
+	fn define_function(
 		&mut self,
-		name: Symbol,
+		func_id: Self::FuncId,
 		decl: &ty::FnDecl,
 		body: &tbir::Block,
 		print_bir: bool,
-	) -> Result<Self::Fn> {
+	) -> Result<()> {
 		let mut context = self.module.make_context();
 
-		let (func_id, signature) = self.declare_func(name, decl, Linkage::Export)?;
-		context.func.signature = signature;
+		context.func.signature = func_id.1;
 
 		let mut builder = FunctionBuilder::new(&mut context.func, &mut self.builder_context);
 
@@ -144,12 +151,11 @@ impl CodeGen for Generator<'_> {
 			.enumerate()
 		{
 			let value = builder.block_params(entry_block)[i];
-			let variable = self.variable_generator.create_var(&mut builder, value, ty);
-			values.insert(ident.name, Some(variable));
-		}
 
-		if let Some(ref mut func) = self.functions.get_mut(&name) {
-			func.defined = true;
+			let variable = builder.declare_var(ty);
+			builder.def_var(variable, value);
+
+			values.insert(ident.name, Some(variable));
 		}
 
 		let mut generator = FunctionGenerator {
@@ -159,28 +165,12 @@ impl CodeGen for Generator<'_> {
 			functions: &self.functions,
 			module: &mut self.module,
 			values,
-			variable_generator: &mut self.variable_generator,
 
 			loops: Vec::default(),
 		};
 
-		let return_value = match generator.codegen_block(body) {
-			Ok(ret) => ret,
-			Err(err) => {
-				self.functions.remove(&name);
-				return Err(err);
-			}
-		};
-
-		match return_value {
-			KValue::Value(val) => {
-				generator.builder.ins().return_(&[val]);
-			}
-			KValue::Zst => {
-				generator.builder.ins().return_(&[]);
-			}
-			KValue::Never => {}
-		}
+		let return_value = generator.codegen_block(body)?;
+		return_value.value_as_slice(|vals| generator.builder.ins().return_(vals));
 
 		generator.builder.finalize();
 
@@ -192,53 +182,35 @@ impl CodeGen for Generator<'_> {
 			print!("{}", context.func.display());
 		}
 
-		self.module.define_function(func_id, &mut context).unwrap();
+		self.module
+			.define_function(func_id.0, &mut context)
+			.unwrap();
+
 		self.module.clear_context(&mut context);
 
+		Ok(())
+	}
+
+	#[allow(unsafe_code)]
+	unsafe fn call_fn_as_main(&mut self, func_id: Self::FuncId) -> Result<i64> {
 		self.module.finalize_definitions().unwrap();
-		let fn_ = self.module.get_finalized_function(func_id);
 
-		#[allow(unsafe_code)]
+		let fn_ = self.module.get_finalized_function(func_id.0);
+
 		// TODO: this is unsafe as some functions ask for arguments, and lot a more reasons
-		let fn_ = unsafe { mem::transmute::<*const u8, fn() -> i64>(fn_) };
+		let main = unsafe { mem::transmute::<*const u8, fn() -> i64>(fn_) };
 
-		Ok(fn_)
+		Ok(main())
 	}
-
-	fn call_fn(&mut self, func: Self::Fn) -> Result<i64> {
-		Ok(func())
-	}
-}
-
-#[derive(Debug, Default)]
-struct VariableGenerator {
-	index: usize,
-}
-
-impl VariableGenerator {
-	fn create_var(&mut self, builder: &mut FunctionBuilder, value: Value, ty: Type) -> Variable {
-		let variable = Variable::new(self.index);
-		self.index += 1;
-		builder.declare_var(variable, ty);
-		builder.def_var(variable, value);
-		variable
-	}
-}
-
-struct CompiledFunction {
-	defined: bool,
-	id: FuncId,
-	param_count: usize,
 }
 
 pub struct FunctionGenerator<'scx, 'bld> {
 	scx: &'scx SessionCtx,
 
 	builder: FunctionBuilder<'bld>,
-	functions: &'bld HashMap<Symbol, CompiledFunction>,
+	functions: &'bld HashMap<Symbol, FuncId>,
 	module: &'bld mut JITModule,
 	values: HashMap<Symbol, Option<Variable>>,
-	variable_generator: &'bld mut VariableGenerator,
 
 	loops: Vec<(Block, Block)>,
 }
@@ -249,7 +221,10 @@ impl FunctionGenerator<'_, '_> {
 		tracing::trace!(id = ?block.id, "codegen_block");
 
 		for stmt in &block.stmts {
-			self.codegen_stmt(stmt)?;
+			let should_stop_block_codegen = self.codegen_stmt(stmt)?;
+			if should_stop_block_codegen {
+				return Ok(KValue::Never);
+			}
 		}
 
 		if let Some(expr) = &block.ret {
@@ -259,34 +234,30 @@ impl FunctionGenerator<'_, '_> {
 		}
 	}
 
-	fn codegen_stmt(&mut self, stmt: &tbir::Stmt) -> Result<()> {
+	fn codegen_stmt(&mut self, stmt: &tbir::Stmt) -> Result<bool /* should_stop_block_codegen */> {
 		tracing::trace!(id = ?stmt.id, "codegen_stmt");
 		match &stmt.kind {
-			tbir::StmtKind::Expr(expr) => {
-				self.codegen_expr(expr)?;
-				Ok(())
-			}
-			tbir::StmtKind::Let { ident, value, .. } => {
-				match self.codegen_expr(value)? {
-					KValue::Value(expr_value) => {
-						let value = self.variable_generator.create_var(
-							&mut self.builder,
-							expr_value,
-							to_cl_type(&value.ty).unwrap(),
-						);
-						self.values.insert(ident.name, Some(value));
-					}
-					KValue::Zst => {
-						self.values.insert(ident.name, None);
-					}
-					KValue::Never => {}
+			tbir::StmtKind::Expr(expr) => match self.codegen_expr(expr)? {
+				KValue::Value(_) | KValue::Zst => {}
+				KValue::Never => return Ok(true),
+			},
+			tbir::StmtKind::Let { ident, value, .. } => match self.codegen_expr(value)? {
+				KValue::Value(expr_value) => {
+					let ty = to_cl_type(&value.ty).unwrap();
+					let variable = self.builder.declare_var(ty);
+					self.builder.def_var(variable, expr_value);
+
+					self.values.insert(ident.name, Some(variable));
 				}
-				Ok(())
-			}
+				KValue::Zst => {
+					self.values.insert(ident.name, None);
+				}
+				KValue::Never => {}
+			},
 			tbir::StmtKind::Assign { target, value } => {
 				let Some(variable) = *self.values.get(&target.name).unwrap() else {
 					// handle zst
-					return Ok(());
+					return Ok(false);
 				};
 
 				match self.codegen_expr(value)? {
@@ -295,7 +266,6 @@ impl FunctionGenerator<'_, '_> {
 					}
 					KValue::Zst | KValue::Never => {}
 				}
-				Ok(())
 			}
 			tbir::StmtKind::Loop { block } => {
 				let loop_ = self.builder.create_block();
@@ -316,9 +286,9 @@ impl FunctionGenerator<'_, '_> {
 				self.builder.seal_block(cont);
 
 				self.loops.pop();
-				Ok(())
 			}
 		}
+		Ok(false)
 	}
 
 	fn codegen_expr(&mut self, expr: &tbir::Expr) -> Result<KValue> {
@@ -347,18 +317,17 @@ impl FunctionGenerator<'_, '_> {
 				KValue::Value(self.codegen_binop(*op, left, right)?)
 			}
 			tbir::ExprKind::FnCall { expr, args } => {
+				// TODO: allow indirect calls
 				let tbir::ExprKind::Variable(ident) = expr.kind else {
 					todo!("not a fn")
 				};
-				let Some(func) = self.functions.get(&ident.name) else {
+				let Some(func_id) = self.functions.get(&ident.name) else {
 					return Err("invalid fn call");
 				};
 
-				if func.param_count != args.len() {
-					return Err("invalid fn call: args nb mismatch");
-				}
-
-				let local_func = self.module.declare_func_in_func(func.id, self.builder.func);
+				let local_func = self
+					.module
+					.declare_func_in_func(*func_id, self.builder.func);
 
 				let mut argsz = Vec::new();
 				for arg in args {

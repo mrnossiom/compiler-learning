@@ -1,6 +1,6 @@
 //! AST to HIR lowering logic
 
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{self, AtomicU32};
 
 use bumpalo::Bump;
 
@@ -24,6 +24,7 @@ impl LowerCtx {
 
 impl LowerCtx {
 	pub fn lower_root<'a>(&'a self, ast: &'a ast::Root) -> Root<'a> {
+		tracing::trace!("lower_root");
 		let lowerer = Lowerer::new(self);
 		lowerer.lower_items(ast)
 	}
@@ -48,16 +49,12 @@ impl<'lcx> Lowerer<'lcx> {
 		// TODO: store hid provenance
 		let _ = aid;
 
-		let hid = self
-			.next_node_id
-			.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		let hid = self.next_node_id.fetch_add(1, atomic::Ordering::Relaxed);
 		NodeId(hid)
 	}
 
 	fn make_new_node_id(&self) -> NodeId {
-		let hid = self
-			.next_node_id
-			.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		let hid = self.next_node_id.fetch_add(1, atomic::Ordering::Relaxed);
 		NodeId(hid)
 	}
 
@@ -240,10 +237,10 @@ impl<'lcx> Lowerer<'lcx> {
 			},
 
 			ast::ExprKind::Return(expr) => {
-				ExprKind::Return(expr.as_ref().map(|expr| self.alloc(self.lower_expr(&expr))))
+				ExprKind::Return(expr.as_ref().map(|expr| self.alloc(self.lower_expr(expr))))
 			}
 			ast::ExprKind::Break(expr) => {
-				ExprKind::Break(expr.as_ref().map(|expr| self.alloc(self.lower_expr(&expr))))
+				ExprKind::Break(expr.as_ref().map(|expr| self.alloc(self.lower_expr(expr))))
 			}
 			ast::ExprKind::Continue => ExprKind::Continue,
 		};
@@ -261,7 +258,8 @@ impl<'lcx> Lowerer<'lcx> {
 		left: &'lcx ast::Expr,
 		right: &'lcx ast::Expr,
 	) -> ExprKind<'lcx> {
-		// TODO: lower to core functions
+		// TODO: lower to interface call
+		// `a + b` becomes `Add.add(a, b)` or `<a as Add>.add(b)`
 		// e.g. ExprKind::FnCall { expr: to_core_func(op), args: vec![left, right] }
 
 		ExprKind::Binary(

@@ -1,5 +1,17 @@
 extern fn putchard(c: uint);
 
+fn main() {
+	n := 0;
+	while n != 10 {
+		res := fibo(n);
+		print_num(res);
+		// newline
+		putchard(10);
+		
+		n = n + 1;
+	}
+}
+
 fn num_to_ascii(n: uint) uint /*Option<uint>*/ {
 	if n <= 9 {
 		num_ascii_base := 48;
@@ -26,7 +38,7 @@ fn print_num_rev(n: uint) {
 fn print_num(n: uint) {
     if n == 0 {
         putchard(num_to_ascii(0));
-        return
+        return;
     };
 
     // Calculate the divisor to get the most significant digit
@@ -69,14 +81,3 @@ fn fibo(n: uint) uint {
 	b
 }
 
-fn main() {
-	n := 0;
-	while n != 10 {
-		res := fibo(n);
-		print_num(res);
-		// newline
-		putchard(10);
-		
-		n = n + 1;
-	}
-}

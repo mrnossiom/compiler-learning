@@ -287,7 +287,7 @@ impl Parser<'_> {
 
 /// Items
 impl Parser<'_> {
-	pub fn parse_file(&mut self) -> PResult<Root> {
+	pub fn parse_root(&mut self) -> PResult<Root> {
 		tracing::trace!(cur = ?self.token.kind, "parse_file");
 		let mut items = Vec::new();
 		while self.token.kind != Eof {

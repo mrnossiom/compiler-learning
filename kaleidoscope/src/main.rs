@@ -1,15 +1,13 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use clap::Parser;
 use kaleic::{
 	codegen::{self, CodeGen},
 	hir, lowerer, parser, resolve, session, ty,
 };
-use tracing_subscriber::{
-	EnvFilter, FmtSubscriber,
-	fmt::{format::FmtSpan, time},
-};
+use tracing_subscriber::{EnvFilter, FmtSubscriber, fmt::time};
 
+#[expect(clippy::struct_excessive_bools)]
 #[derive(clap::Parser)]
 struct Args {
 	pub path: PathBuf,
@@ -29,7 +27,6 @@ fn main() {
 	FmtSubscriber::builder()
 		.with_env_filter(EnvFilter::from_default_env())
 		.with_timer(time::Uptime::default())
-		.with_span_events(FmtSpan::ENTER)
 		.with_writer(std::io::stderr)
 		.init();
 
@@ -49,20 +46,16 @@ fn pipeline(args: &Args, source: &str) {
 		.load_source("entry", source.to_owned());
 
 	// parsing source
-	tracing::debug!("parsing");
-	let ast = match parser::Parser::new(&scx, &source).parse_file() {
+	let mut parser = parser::Parser::new(&scx, &source);
+	let ast = match parser.parse_root() {
 		Ok(ast) => ast,
-		Err(diag) => {
-			scx.emit_diagnostic(&diag);
-			todo!()
-		}
+		Err(diag) => scx.emit_fatal_diagnostic(&diag),
 	};
 	if args.print_ast {
 		println!("{ast:#?}");
 	}
 
 	// lowering to HIR
-	tracing::debug!("lowering ast to hir");
 	let lcx = lowerer::LowerCtx::new();
 	let hir = lcx.lower_root(&ast);
 	if args.print_hir {
@@ -73,8 +66,7 @@ fn pipeline(args: &Args, source: &str) {
 	let tcx = ty::TyCtx::new(&scx);
 
 	let mut cltr = resolve::Collector::new(&tcx);
-	tracing::debug!("collecting items");
-	cltr.collect_hir(&hir);
+	cltr.collect_items(&hir);
 
 	// TODO: lower HIR bodies to TBIR
 
@@ -87,13 +79,15 @@ fn pipeline(args: &Args, source: &str) {
 		&context,
 	);
 
-	let mut main = None;
+	let mut main_id = None;
+	let mut id_map = HashMap::new();
+
 	for item in hir.items {
 		match item.kind {
 			hir::ItemKind::Extern { ident, decl } => {
 				// TODO: do this elsewhere
 				let decl = tcx.lower_fn_decl(decl);
-				generator.extern_(ident.name, &decl).unwrap();
+				generator.declare_extern(ident.name, &decl).unwrap();
 			}
 			hir::ItemKind::Function { ident, decl, body } => {
 				// TODO: do this elsewhere
@@ -103,18 +97,42 @@ fn pipeline(args: &Args, source: &str) {
 				if args.print_tbir {
 					println!("{body:#?}");
 				}
-				let fn_ = generator
-					.function(ident.name, &decl, &body, args.print_bir)
-					.unwrap();
+				let func_id = generator.declare_function(ident.name, &decl).unwrap();
 
+				id_map.insert(ident.name, func_id.clone());
 				if scx.symbols.resolve(ident.name) == "main" {
-					main = Some(fn_);
+					main_id = Some(func_id.clone());
 				}
 			}
 		}
 	}
+	for item in hir.items {
+		match item.kind {
+			hir::ItemKind::Extern { .. } => {}
+			hir::ItemKind::Function { ident, decl, body } => {
+				// TODO: do this elsewhere
+				let decl = tcx.lower_fn_decl(decl);
 
-	tracing::debug!(fn_ret = generator.call_fn(main.expect("no main func")).unwrap());
+				let body = tcx.typeck_fn(ident, &decl, body, &cltr.environment);
+				if args.print_tbir {
+					println!("{body:#?}");
+				}
+				let func_id = id_map.get(&ident.name).unwrap();
+				generator
+					.define_function(func_id.clone(), &decl, &body, args.print_bir)
+					.unwrap();
+			}
+		}
+	}
+
+	#[allow(unsafe_code)]
+	let fn_ret = unsafe {
+		generator
+			.call_fn_as_main(main_id.expect("no main func"))
+			.unwrap()
+	};
+
+	tracing::debug!(fn_ret);
 
 	tracing::info!("Reached pipeline end successfully!");
 }

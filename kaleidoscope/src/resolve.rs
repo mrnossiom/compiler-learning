@@ -33,7 +33,8 @@ impl<'tcx> Collector<'tcx> {
 }
 
 impl Collector<'_> {
-	pub fn collect_hir(&mut self, hir: &hir::Root) {
+	pub fn collect_items(&mut self, hir: &hir::Root) {
+		tracing::trace!("collect_items");
 		for item in hir.items {
 			self.collect_item(item);
 		}

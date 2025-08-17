@@ -130,17 +130,17 @@ pub struct SessionCtx {
 
 impl SessionCtx {
 	pub fn emit_diagnostic(&self, diagnostic: &Diagnostic) {
-		let fatal = diagnostic.level == DiagLevel::Error;
-
 		eprintln!(
-			"{}: `{}`",
+			"[{:?}] {}: `{}`",
+			diagnostic.level,
 			diagnostic.msg,
 			self.source_map.read().fetch_span(diagnostic.span)
 		);
+	}
 
-		if fatal {
-			process::exit(1);
-		}
+	pub fn emit_fatal_diagnostic(&self, diagnostic: &Diagnostic) -> ! {
+		self.emit_diagnostic(diagnostic);
+		process::exit(1);
 	}
 }
 

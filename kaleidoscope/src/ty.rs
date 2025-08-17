@@ -204,9 +204,9 @@ impl Inferer<'_> {
 				let left = self.infer_expr(left);
 				let right = self.infer_expr(right);
 
-				let op_ty = self.unify(&left, &right);
 				// TODO: allow with bools
-				self.unify(&TyKind::Integer, &op_ty);
+				self.unify(&TyKind::Integer, &left);
+				self.unify(&TyKind::Integer, &right);
 
 				#[allow(clippy::enum_glob_use)]
 				let expected = {

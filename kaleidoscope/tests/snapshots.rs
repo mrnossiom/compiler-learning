@@ -8,7 +8,7 @@ fn fibo() {
 
 	let source = scx.source_map.write().load_source("entry", source.into());
 
-	let ast = parser::Parser::new(&scx, &source).parse_file().unwrap();
+	let ast = parser::Parser::new(&scx, &source).parse_root().unwrap();
 	insta::assert_debug_snapshot!(ast);
 
 	// lowering to HIR

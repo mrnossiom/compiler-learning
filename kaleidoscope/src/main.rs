@@ -1,16 +1,16 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::Parser;
-use kaleic::{
-	codegen::{self, CodeGen},
-	hir, lowerer, parser, resolve, session, ty,
-};
+use kaleic::{codegen::CodeGenCtx, lowerer, parser, resolve, session, ty};
 use tracing_subscriber::{EnvFilter, FmtSubscriber, fmt::time};
 
 #[expect(clippy::struct_excessive_bools)]
 #[derive(clap::Parser)]
 struct Args {
 	pub path: PathBuf,
+
+	#[clap(long)]
+	pub jit: bool,
 
 	#[clap(long)]
 	pub print_ast: bool,
@@ -68,71 +68,19 @@ fn pipeline(args: &Args, source: &str) {
 	let mut cltr = resolve::Collector::new(&tcx);
 	cltr.collect_items(&hir);
 
-	// TODO: lower HIR bodies to TBIR
-
+	// lower HIR bodies to TBIR
 	// codegen TBIR bodies
-	#[cfg(feature = "llvm")]
-	let context = inkwell::context::Context::create();
-	let mut generator = codegen::Generator::new(
-		&scx,
-		#[cfg(feature = "llvm")]
-		&context,
-	);
-
-	let mut main_id = None;
-	let mut id_map = HashMap::new();
-
-	for item in hir.items {
-		match item.kind {
-			hir::ItemKind::Extern { ident, decl } => {
-				// TODO: do this elsewhere
-				let decl = tcx.lower_fn_decl(decl);
-				generator.declare_extern(ident.name, &decl).unwrap();
-			}
-			hir::ItemKind::Function { ident, decl, body } => {
-				// TODO: do this elsewhere
-				let decl = tcx.lower_fn_decl(decl);
-
-				let body = tcx.typeck_fn(ident, &decl, body, &cltr.environment);
-				if args.print_tbir {
-					println!("{body:#?}");
-				}
-				let func_id = generator.declare_function(ident.name, &decl).unwrap();
-
-				id_map.insert(ident.name, func_id.clone());
-				if scx.symbols.resolve(ident.name) == "main" {
-					main_id = Some(func_id.clone());
-				}
-			}
-		}
+	if args.jit {
+		let mut cgcx = CodeGenCtx::new_jit(&scx, &tcx);
+		let main = cgcx.codegen_root(&hir, &cltr.environment, args.print_tbir, args.print_bir);
+		let fn_ret = main();
+		tracing::debug!(fn_ret);
+	} else {
+		let mut cgcx = CodeGenCtx::new_object(&scx, &tcx);
+		let object = cgcx.codegen_root(&hir, &cltr.environment, args.print_tbir, args.print_bir);
+		let bytes = object.emit().unwrap();
+		std::fs::write("./out.o", bytes).unwrap();
 	}
-	for item in hir.items {
-		match item.kind {
-			hir::ItemKind::Extern { .. } => {}
-			hir::ItemKind::Function { ident, decl, body } => {
-				// TODO: do this elsewhere
-				let decl = tcx.lower_fn_decl(decl);
-
-				let body = tcx.typeck_fn(ident, &decl, body, &cltr.environment);
-				if args.print_tbir {
-					println!("{body:#?}");
-				}
-				let func_id = id_map.get(&ident.name).unwrap();
-				generator
-					.define_function(func_id.clone(), &decl, &body, args.print_bir)
-					.unwrap();
-			}
-		}
-	}
-
-	#[allow(unsafe_code)]
-	let fn_ret = unsafe {
-		generator
-			.call_fn_as_main(main_id.expect("no main func"))
-			.unwrap()
-	};
-
-	tracing::debug!(fn_ret);
 
 	tracing::info!("Reached pipeline end successfully!");
 }

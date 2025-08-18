@@ -1,9 +1,8 @@
-use std::{collections::HashMap, mem};
+use std::collections::HashMap;
 
 use cranelift::prelude::*;
 use cranelift_control::ControlPlane;
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
+use cranelift_module::{FuncId, Linkage, Module};
 
 pub enum KValue {
 	Value(Value),
@@ -30,33 +29,22 @@ use crate::{
 	tbir, ty,
 };
 
-pub struct Generator<'scx> {
+pub struct Generator<'scx, 'm> {
 	scx: &'scx SessionCtx,
 
+	module: &'m mut dyn Module,
 	builder_context: FunctionBuilderContext,
+
 	functions: HashMap<Symbol, FuncId>,
-	module: JITModule,
 }
 
-impl<'scx> Generator<'scx> {
-	pub fn new(scx: &'scx SessionCtx) -> Self {
-		let mut flag_builder = settings::builder();
-		flag_builder.set("opt_level", "speed_and_size").unwrap();
-
-		let isa = cranelift_native::builder()
-			.unwrap()
-			.finish(settings::Flags::new(flag_builder))
-			.unwrap();
-
-		let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
-
-		builder.symbol("putchard", crate::ffi::putchard as *const u8);
-
+impl<'scx, 'm> Generator<'scx, 'm> {
+	pub fn new(scx: &'scx SessionCtx, module: &'m mut dyn Module) -> Self {
 		Self {
 			scx,
+			module,
 			builder_context: FunctionBuilderContext::new(),
 			functions: HashMap::new(),
-			module: JITModule::new(builder),
 		}
 	}
 }
@@ -74,54 +62,59 @@ fn to_cl_type(output: &ty::TyKind) -> Option<Type> {
 	}
 }
 
-impl Generator<'_> {
+impl Generator<'_, '_> {
+	pub fn lower_signature(&mut self, decl: &ty::FnDecl) -> Signature {
+		let mut signature = self.module.make_signature();
+
+		for ty::Param { ident: _, ty } in &decl.inputs {
+			let Some(type_) = to_cl_type(ty) else {
+				continue;
+			};
+			signature.params.push(AbiParam::new(type_));
+		}
+		if let Some(type_) = to_cl_type(&decl.output) {
+			signature.returns.push(AbiParam::new(type_));
+		}
+
+		signature
+	}
+
 	pub fn declare_func(
 		&mut self,
 		name: Symbol,
 		decl: &ty::FnDecl,
 		linkage: Linkage,
-	) -> Result<(FuncId, Signature)> {
-		match self.functions.get(&name) {
-			None => {
-				let mut signature = self.module.make_signature();
-				for ty::Param { ident: _, ty } in &decl.inputs {
-					let Some(type_) = to_cl_type(ty) else {
-						continue;
-					};
-					signature.params.push(AbiParam::new(type_));
-				}
-				if let Some(type_) = to_cl_type(&decl.output) {
-					signature.returns.push(AbiParam::new(type_));
-				}
-
-				let func_name = self.scx.symbols.resolve(name);
-				let func_id = self
-					.module
-					.declare_function(&func_name, linkage, &signature)
-					.unwrap();
-
-				self.functions.insert(name, func_id);
-				Ok((func_id, signature))
-			}
-			Some(_) => Err("already defined"),
+	) -> Result<FuncId> {
+		if let Some(_) = self.functions.get(&name) {
+			return Err("already defined");
 		}
+
+		let signature = self.lower_signature(decl);
+
+		let func_name = self.scx.symbols.resolve(name);
+		let func_id = self
+			.module
+			.declare_function(&func_name, linkage, &signature)
+			.unwrap();
+
+		self.functions.insert(name, func_id);
+		Ok(func_id)
 	}
 }
 
-impl CodeGen for Generator<'_> {
-	// HACK: compute signature elsewhere
-	type FuncId = (FuncId, Signature);
+impl CodeGen for Generator<'_, '_> {
+	type FuncId = FuncId;
 
 	#[tracing::instrument(level = "debug", skip(self, decl))]
 	fn declare_extern(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<()> {
-		let (func_id, signature) = self.declare_func(name, decl, Linkage::Import)?;
+		let _func_id = self.declare_func(name, decl, Linkage::Import)?;
 		Ok(())
 	}
 
 	#[tracing::instrument(level = "debug", skip(self, decl))]
 	fn declare_function(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<Self::FuncId> {
-		let (func_id, signature) = self.declare_func(name, decl, Linkage::Export)?;
-		Ok((func_id, signature))
+		let func_id = self.declare_func(name, decl, Linkage::Export)?;
+		Ok(func_id)
 	}
 
 	fn define_function(
@@ -133,7 +126,8 @@ impl CodeGen for Generator<'_> {
 	) -> Result<()> {
 		let mut context = self.module.make_context();
 
-		context.func.signature = func_id.1;
+		// TODO: this computes the signature a second time after declaration
+		context.func.signature = self.lower_signature(decl);
 
 		let mut builder = FunctionBuilder::new(&mut context.func, &mut self.builder_context);
 
@@ -163,7 +157,7 @@ impl CodeGen for Generator<'_> {
 
 			builder,
 			functions: &self.functions,
-			module: &mut self.module,
+			module: self.module,
 			values,
 
 			loops: Vec::default(),
@@ -182,25 +176,11 @@ impl CodeGen for Generator<'_> {
 			print!("{}", context.func.display());
 		}
 
-		self.module
-			.define_function(func_id.0, &mut context)
-			.unwrap();
+		self.module.define_function(func_id, &mut context).unwrap();
 
 		self.module.clear_context(&mut context);
 
 		Ok(())
-	}
-
-	#[allow(unsafe_code)]
-	unsafe fn call_fn_as_main(&mut self, func_id: Self::FuncId) -> Result<i64> {
-		self.module.finalize_definitions().unwrap();
-
-		let fn_ = self.module.get_finalized_function(func_id.0);
-
-		// TODO: this is unsafe as some functions ask for arguments, and lot a more reasons
-		let main = unsafe { mem::transmute::<*const u8, fn() -> i64>(fn_) };
-
-		Ok(main())
 	}
 }
 
@@ -209,7 +189,7 @@ pub struct FunctionGenerator<'scx, 'bld> {
 
 	builder: FunctionBuilder<'bld>,
 	functions: &'bld HashMap<Symbol, FuncId>,
-	module: &'bld mut JITModule,
+	module: &'bld mut dyn Module,
 	values: HashMap<Symbol, Option<Variable>>,
 
 	loops: Vec<(Block, Block)>,

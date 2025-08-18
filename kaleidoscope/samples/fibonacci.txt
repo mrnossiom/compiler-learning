@@ -1,4 +1,6 @@
-extern fn putchard(c: uint);
+// You can link any symbol from libc here
+
+extern fn putchar(c: uint);
 
 fn main() {
 	n := 0;
@@ -6,7 +8,7 @@ fn main() {
 		res := fibo(n);
 		print_num(res);
 		// newline
-		putchard(10);
+		putchar(10);
 		
 		n = n + 1;
 	}
@@ -25,19 +27,19 @@ fn num_to_ascii(n: uint) uint /*Option<uint>*/ {
 
 fn print_num_rev(n: uint) {
 	if n == 0 {
-		putchard(num_to_ascii(0));
+		putchar(num_to_ascii(0));
 	} else {
 		while n != 0 {
 			rest := n % 10;
 			n = n / 10;
-			putchard(num_to_ascii(rest));
+			putchar(num_to_ascii(rest));
 		}
 	};
 }
 
 fn print_num(n: uint) {
     if n == 0 {
-        putchard(num_to_ascii(0));
+        putchar(num_to_ascii(0));
         return;
     };
 
@@ -55,7 +57,7 @@ fn print_num(n: uint) {
     // Print each digit from most to least significant
     while divisor > 0 {
         digit := temp / divisor;  // Get the current most significant digit
-        putchard(num_to_ascii(digit));
+        putchar(num_to_ascii(digit));
         
         // Remove the most significant digit
         temp = temp % divisor;

@@ -3,11 +3,13 @@ use std::{
 	sync::atomic::{AtomicU32, Ordering},
 };
 
+use ariadne::{Label, Report, ReportKind};
+
 use crate::{
 	ast::{self, Ident},
 	hir, lexer,
 	resolve::Environment,
-	session::{SessionCtx, Symbol},
+	session::{Diagnostic, SessionCtx, Span, Symbol},
 	tbir,
 };
 
@@ -41,7 +43,41 @@ impl TyCtx<'_> {
 	) -> tbir::Block {
 		let mut inferer = Inferer::new(self, decl, body, &env.values);
 		inferer.infer_fn();
-		inferer.build_body()
+
+		let mut expr_tys = HashMap::default();
+
+		for ((span, node_id), ty_infer) in inferer.expr_type {
+			match ty_infer.as_no_infer() {
+				Ok(ty) => {
+					expr_tys.insert(node_id, ty);
+				}
+				Err((mut tag, _infer)) => loop {
+					let Some(ty) = inferer.infer_map.get(&tag) else {
+						let report =
+							Report::build(ReportKind::Error, span)
+								.with_label(Label::new(span).with_message(
+									"expression is unconstrainted, thus has no type",
+								));
+
+						self.scx.emit_diagnostic(&Diagnostic::new(report));
+						break;
+					};
+					match ty.clone().as_no_infer() {
+						Ok(ty) => {
+							expr_tys.insert(node_id, ty);
+							break;
+						}
+						Err((next_tag, _)) => tag = next_tag,
+					}
+				},
+			}
+		}
+
+		let tbir_builder = TbirBuilder {
+			body: inferer.body,
+			expr_tys,
+		};
+		tbir_builder.build_body()
 	}
 }
 
@@ -97,7 +133,8 @@ pub struct Inferer<'tcx> {
 	body: &'tcx hir::Block<'tcx>,
 
 	local_env: HashMap<Symbol, Vec<TyKind<Infer>>>,
-	expr_type: HashMap<hir::NodeId, TyKind<Infer>>,
+	// get this span out of here once we have an easy NodeId -> Span way
+	expr_type: HashMap<(Span, hir::NodeId), TyKind<Infer>>,
 	infer_map: HashMap<InferTag, TyKind<Infer>>,
 }
 
@@ -260,7 +297,11 @@ impl Inferer<'_> {
 		};
 
 		// TODO
-		assert!(self.expr_type.insert(expr.id, ty.clone()).is_none());
+		assert!(
+			self.expr_type
+				.insert((expr.span, expr.id), ty.clone())
+				.is_none()
+		);
 
 		ty
 	}
@@ -306,22 +347,6 @@ impl Inferer<'_> {
 		self.infer_map.insert(tag, unified.clone());
 
 		unified
-	}
-
-	#[tracing::instrument(level = "trace", skip(self), ret)]
-	fn resolve_ty(&self, id: hir::NodeId) -> TyKind {
-		let mut tag = match self.expr_type.get(&id).cloned().unwrap().as_no_infer() {
-			Ok(ty) => return ty,
-			Err((tag, _)) => tag,
-		};
-
-		loop {
-			// tracing::debug!(?tag, "{:?}", self.infer_map);
-			match self.infer_map.get(&tag).cloned().unwrap().as_no_infer() {
-				Ok(ty) => return ty,
-				Err((new_tag, _)) => tag = new_tag,
-			}
-		}
 	}
 }
 
@@ -398,8 +423,14 @@ impl TyKind<Infer> {
 	}
 }
 
+struct TbirBuilder<'a> {
+	body: &'a hir::Block<'a>,
+
+	expr_tys: HashMap<hir::NodeId, TyKind>,
+}
+
 /// TBIR construction
-impl Inferer<'_> {
+impl TbirBuilder<'_> {
 	fn build_body(&self) -> tbir::Block {
 		self.build_block(self.body)
 	}
@@ -480,7 +511,7 @@ impl Inferer<'_> {
 
 		tbir::Expr {
 			kind,
-			ty: self.resolve_ty(expr.id),
+			ty: self.expr_tys.get(&expr.id).unwrap().clone(),
 			span: expr.span,
 			id: expr.id,
 		}

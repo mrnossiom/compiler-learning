@@ -123,6 +123,8 @@ pub enum BinOp {
 	Minus,
 	Mul,
 	Div,
+
+	/// Also commonly known as `Rem`
 	#[doc(alias = "Rem")]
 	Mod,
 

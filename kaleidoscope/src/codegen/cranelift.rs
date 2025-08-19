@@ -16,18 +16,19 @@ use crate::{
 	ty::{self, TyCtx},
 };
 
-pub enum KValue {
+pub enum MaybeValue {
 	Value(Value),
+	/// Zero-sized value
 	Zst,
 	Never,
 }
 
-impl KValue {
+impl MaybeValue {
 	// surely the worst name ever given to a function
-	fn value_as_slice<T>(self, func: impl FnOnce(&[Value]) -> T) {
+	fn as_slice(self, func: impl FnOnce(&[Value])) {
 		match self {
-			Self::Value(val) => _ = func(&[val]),
-			Self::Zst => _ = func(&[]),
+			Self::Value(val) => func(&[val]),
+			Self::Zst => func(&[]),
 			Self::Never => {}
 		}
 	}
@@ -271,7 +272,9 @@ impl<M: Module> Backend for Generator<'_, M> {
 		};
 
 		let return_value = generator.codegen_block(body)?;
-		return_value.value_as_slice(|vals| generator.builder.ins().return_(vals));
+		return_value.as_slice(|vals| {
+			generator.builder.ins().return_(vals);
+		});
 
 		generator.builder.finalize();
 
@@ -318,20 +321,20 @@ impl FunctionGenerator<'_, '_> {
 		}
 	}
 
-	fn codegen_block(&mut self, block: &tbir::Block) -> Result<KValue> {
+	fn codegen_block(&mut self, block: &tbir::Block) -> Result<MaybeValue> {
 		tracing::trace!(id = ?block.id, "codegen_block");
 
 		for stmt in &block.stmts {
 			let should_stop_block_codegen = self.codegen_stmt(stmt)?;
 			if should_stop_block_codegen {
-				return Ok(KValue::Never);
+				return Ok(MaybeValue::Never);
 			}
 		}
 
 		if let Some(expr) = &block.ret {
 			self.codegen_expr(expr)
 		} else {
-			Ok(KValue::Zst)
+			Ok(MaybeValue::Zst)
 		}
 	}
 
@@ -339,21 +342,21 @@ impl FunctionGenerator<'_, '_> {
 		tracing::trace!(id = ?stmt.id, "codegen_stmt");
 		match &stmt.kind {
 			tbir::StmtKind::Expr(expr) => match self.codegen_expr(expr)? {
-				KValue::Value(_) | KValue::Zst => {}
-				KValue::Never => return Ok(true),
+				MaybeValue::Value(_) | MaybeValue::Zst => {}
+				MaybeValue::Never => return Ok(true),
 			},
 			tbir::StmtKind::Let { ident, value, .. } => match self.codegen_expr(value)? {
-				KValue::Value(expr_value) => {
+				MaybeValue::Value(expr_value) => {
 					let ty = self.to_cl_type(&value.ty).unwrap();
 					let variable = self.builder.declare_var(ty);
 					self.builder.def_var(variable, expr_value);
 
 					self.values.insert(ident.name, Some(variable));
 				}
-				KValue::Zst => {
+				MaybeValue::Zst => {
 					self.values.insert(ident.name, None);
 				}
-				KValue::Never => {}
+				MaybeValue::Never => {}
 			},
 			tbir::StmtKind::Assign { target, value } => {
 				let Some(variable) = *self.values.get(&target.name).unwrap() else {
@@ -362,10 +365,10 @@ impl FunctionGenerator<'_, '_> {
 				};
 
 				match self.codegen_expr(value)? {
-					KValue::Value(expr_value) => {
+					MaybeValue::Value(expr_value) => {
 						self.builder.def_var(variable, expr_value);
 					}
-					KValue::Zst | KValue::Never => {}
+					MaybeValue::Zst | MaybeValue::Never => {}
 				}
 			}
 			tbir::StmtKind::Loop { block } => {
@@ -392,7 +395,7 @@ impl FunctionGenerator<'_, '_> {
 		Ok(false)
 	}
 
-	fn codegen_expr(&mut self, expr: &tbir::Expr) -> Result<KValue> {
+	fn codegen_expr(&mut self, expr: &tbir::Expr) -> Result<MaybeValue> {
 		tracing::trace!(id = ?expr.id, "codegen_expr");
 		let value = match &expr.kind {
 			tbir::ExprKind::Literal(lit, sym) => {
@@ -409,15 +412,15 @@ impl FunctionGenerator<'_, '_> {
 					}
 					lexer::LiteralKind::Str => todo!(),
 				};
-				KValue::Value(value)
+				MaybeValue::Value(value)
 			}
 			tbir::ExprKind::Variable(ident) => match self.values.get(&ident.name) {
-				Some(Some(var)) => KValue::Value(self.builder.use_var(*var)),
-				Some(None) => KValue::Zst,
+				Some(Some(var)) => MaybeValue::Value(self.builder.use_var(*var)),
+				Some(None) => MaybeValue::Zst,
 				None => return Err("var undefined"),
 			},
 			tbir::ExprKind::Binary(op, left, right) => {
-				KValue::Value(self.codegen_binop(*op, left, right)?)
+				MaybeValue::Value(self.codegen_bin_op(*op, left, right)?)
 			}
 			tbir::ExprKind::FnCall { expr, args } => {
 				// TODO: allow indirect calls
@@ -435,10 +438,10 @@ impl FunctionGenerator<'_, '_> {
 				let mut argsz = Vec::new();
 				for arg in args {
 					match self.codegen_expr(arg)? {
-						KValue::Value(expr_value) => {
+						MaybeValue::Value(expr_value) => {
 							argsz.push(expr_value);
 						}
-						KValue::Zst | KValue::Never => {}
+						MaybeValue::Zst | MaybeValue::Never => {}
 					}
 				}
 
@@ -446,8 +449,8 @@ impl FunctionGenerator<'_, '_> {
 
 				let inst_results = self.builder.inst_results(call);
 				match inst_results.len() {
-					0 => KValue::Zst,
-					1 => KValue::Value(inst_results[0]),
+					0 => MaybeValue::Zst,
+					1 => MaybeValue::Value(inst_results[0]),
 					_ => panic!(),
 				}
 			}
@@ -459,45 +462,45 @@ impl FunctionGenerator<'_, '_> {
 			tbir::ExprKind::Return(expr) => {
 				if let Some(expr) = expr {
 					match self.codegen_expr(expr)? {
-						KValue::Value(expr_value) => {
+						MaybeValue::Value(expr_value) => {
 							self.builder.ins().return_(&[expr_value]);
 						}
-						KValue::Zst => {
+						MaybeValue::Zst => {
 							self.builder.ins().return_(&[]);
 						}
-						KValue::Never => {}
+						MaybeValue::Never => {}
 					}
 				} else {
 					self.builder.ins().return_(&[]);
 				}
 
-				KValue::Never
+				MaybeValue::Never
 			}
 			tbir::ExprKind::Break(expr) => {
 				let (_, cont) = *self.loops.last().unwrap();
 
 				if let Some(expr) = expr {
 					match self.codegen_expr(expr)? {
-						KValue::Value(expr_value) => {
+						MaybeValue::Value(expr_value) => {
 							self.builder.ins().jump(cont, &[expr_value.into()]);
 						}
-						KValue::Zst => {
+						MaybeValue::Zst => {
 							self.builder.ins().jump(cont, &[]);
 						}
-						KValue::Never => {}
+						MaybeValue::Never => {}
 					}
 				} else {
 					self.builder.ins().jump(cont, &[]);
 				}
 
-				KValue::Never
+				MaybeValue::Never
 			}
 			tbir::ExprKind::Continue => {
 				let (loop_, _) = *self.loops.last().unwrap();
 
 				self.builder.ins().jump(loop_, &[]);
 
-				KValue::Never
+				MaybeValue::Never
 			}
 		};
 		Ok(value)
@@ -506,19 +509,19 @@ impl FunctionGenerator<'_, '_> {
 
 /// Codegen bits
 impl FunctionGenerator<'_, '_> {
-	fn codegen_binop(
+	fn codegen_bin_op(
 		&mut self,
 		op: ast::Spanned<lexer::BinOp>,
 		left: &tbir::Expr,
 		right: &tbir::Expr,
 	) -> Result<Value> {
-		tracing::trace!("codegen_binop");
+		tracing::trace!("codegen_bin_op");
 		// cannot be zst
 		let lhs = self.codegen_expr(left)?;
 		let rhs = self.codegen_expr(right)?;
 
 		let (lhs, rhs) = match (lhs, rhs) {
-			(KValue::Value(lhs), KValue::Value(rhs)) => (lhs, rhs),
+			(MaybeValue::Value(lhs), MaybeValue::Value(rhs)) => (lhs, rhs),
 			_ => panic!(),
 		};
 
@@ -551,15 +554,15 @@ impl FunctionGenerator<'_, '_> {
 		cond: &tbir::Expr,
 		conseq: &tbir::Block,
 		altern: Option<&tbir::Block>,
-	) -> Result<KValue> {
+	) -> Result<MaybeValue> {
 		let then_block = self.builder.create_block();
 		let else_block = altern.as_ref().map(|_| self.builder.create_block());
 		let cont_block = self.builder.create_block();
 		tracing::trace!(?then_block, ?else_block, ?cont_block, "codegen_if");
 
 		let condition = match self.codegen_expr(cond)? {
-			KValue::Value(val) => val,
-			KValue::Zst | KValue::Never => panic!(),
+			MaybeValue::Value(val) => val,
+			MaybeValue::Zst | MaybeValue::Never => panic!(),
 		};
 
 		if let Some(ty) = self.to_cl_type(&conseq.ty) {
@@ -576,13 +579,13 @@ impl FunctionGenerator<'_, '_> {
 		self.builder.switch_to_block(then_block);
 		self.builder.seal_block(then_block);
 		match self.codegen_block(conseq)? {
-			KValue::Value(then_ret) => {
+			MaybeValue::Value(then_ret) => {
 				self.builder.ins().jump(cont_block, &[then_ret.into()]);
 			}
-			KValue::Zst => {
+			MaybeValue::Zst => {
 				self.builder.ins().jump(cont_block, &[]);
 			}
-			KValue::Never => {}
+			MaybeValue::Never => {}
 		}
 		if let Some(altern) = altern {
 			// TODO
@@ -592,21 +595,21 @@ impl FunctionGenerator<'_, '_> {
 			self.builder.seal_block(else_block);
 
 			match self.codegen_block(altern)? {
-				KValue::Value(else_ret) => {
+				MaybeValue::Value(else_ret) => {
 					self.builder.ins().jump(cont_block, &[else_ret.into()]);
 				}
-				KValue::Zst => {
+				MaybeValue::Zst => {
 					self.builder.ins().jump(cont_block, &[]);
 				}
-				KValue::Never => {}
+				MaybeValue::Never => {}
 			}
 		}
 		self.builder.switch_to_block(cont_block);
 		self.builder.seal_block(cont_block);
 		let block_params = self.builder.block_params(cont_block);
 		Ok(match block_params.len() {
-			0 => KValue::Zst,
-			1 => KValue::Value(block_params[0]),
+			0 => MaybeValue::Zst,
+			1 => MaybeValue::Value(block_params[0]),
 			_ => panic!(),
 		})
 	}

@@ -27,18 +27,3 @@ pub trait Backend {
 		body: &tbir::Block,
 	) -> Result<()>;
 }
-
-// // LLVM
-// #[cfg(feature = "llvm")]
-// impl CodeGenCtx<_> {
-// 	pub fn new_jit() -> Self {
-// 		#[cfg(feature = "llvm")]
-// 		let context = inkwell::context::Context::create();
-// 		let mut generator = codegen::Generator::new(
-// 			&scx,
-// 			#[cfg(feature = "llvm")]
-// 			&context,
-// 			&mut module,
-// 		);
-// 	}
-// }

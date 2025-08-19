@@ -2,7 +2,7 @@ use std::{path::PathBuf, process};
 
 use clap::Parser;
 use kaleic::{
-	codegen::{Backend, CraneliftBackend},
+	codegen::{Backend, CraneliftBackend, LlvmBackend},
 	lowerer, parser, resolve,
 	session::{self, SessionCtx},
 	ty,
@@ -82,7 +82,8 @@ fn pipeline(scx: &SessionCtx) {
 	// lower HIR bodies to TBIR
 	// codegen TBIR bodies
 	if scx.options.jit {
-		let mut cgcx = CraneliftBackend::new_jit(&tcx);
+		// let mut cgcx = CraneliftBackend::new_jit(&tcx);
+		let mut cgcx = LlvmBackend::new_jit(&tcx);
 		cgcx.codegen_root(&hir, &cltr.environment);
 
 		let main = cgcx.get_output();

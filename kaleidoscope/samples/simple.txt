@@ -2,6 +2,10 @@ extern fn putchard(c: uint);
 
 fn hello_world() { }
 
-fn main() {
+fn main() uint {
+	a :uint= 0;
+	
 	hello_world();
+
+	0
 }

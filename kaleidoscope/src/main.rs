@@ -2,7 +2,9 @@ use std::{path::PathBuf, process};
 
 use clap::Parser;
 use kaleic::{
-	codegen::{Backend, CraneliftBackend, LlvmBackend},
+	codegen::{
+		AvailableBackend, Backend, CraneliftBackend, JitBackend, LlvmBackend, ObjectBackend,
+	},
 	lowerer, parser, resolve,
 	session::{self, SessionCtx},
 	ty,
@@ -14,6 +16,9 @@ struct Args {
 	pub input: Option<PathBuf>,
 	#[clap(long)]
 	pub output: Option<PathBuf>,
+
+	#[clap(long)]
+	pub backend: Option<String>,
 
 	#[clap(long)]
 	pub jit: bool,
@@ -82,20 +87,28 @@ fn pipeline(scx: &SessionCtx) {
 	// lower HIR bodies to TBIR
 	// codegen TBIR bodies
 	if scx.options.jit {
-		// let mut cgcx = CraneliftBackend::new_jit(&tcx);
-		let mut cgcx = LlvmBackend::new_jit(&tcx);
-		cgcx.codegen_root(&hir, &cltr.environment);
+		let backend: &mut dyn JitBackend = match scx.options.backend {
+			AvailableBackend::Cranelift => &mut CraneliftBackend::new_jit(&tcx),
+			AvailableBackend::Llvm => &mut LlvmBackend::new_jit(&tcx),
+		};
 
-		let main = cgcx.get_output();
-		let fn_ret = main();
-		tracing::debug!(fn_ret);
+		backend.codegen_root(&hir, &cltr.environment);
+		backend.call_main();
 	} else {
-		let mut cgcx = CraneliftBackend::new_object(&tcx);
-		cgcx.codegen_root(&hir, &cltr.environment);
+		let mut backend: CraneliftBackend<_> = match scx.options.backend {
+			AvailableBackend::Cranelift => CraneliftBackend::new_object(&tcx),
+			AvailableBackend::Llvm => todo!("no object backend for llvm"),
+		};
 
-		let object = cgcx.get_output();
+		backend.codegen_root(&hir, &cltr.environment);
+
+		let object = backend.get_object();
 		let bytes = object.emit().unwrap();
-		std::fs::write(scx.options.output.as_ref().unwrap(), bytes).unwrap();
+		std::fs::write(
+			scx.options.output.as_ref().expect("no output filename"),
+			bytes,
+		)
+		.unwrap();
 	}
 
 	tracing::info!("Reached pipeline end successfully!");

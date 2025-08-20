@@ -13,7 +13,7 @@ use inkwell::{
 
 use crate::{
 	Result, ast,
-	codegen::Backend,
+	codegen::{Backend, JitBackend, ObjectBackend},
 	hir, lexer,
 	resolve::Environment,
 	session::Symbol,
@@ -29,7 +29,7 @@ enum MaybeValue<'ctx> {
 }
 
 impl<'ctx> MaybeValue<'ctx> {
-	fn is_never(&self) -> bool {
+	const fn is_never(&self) -> bool {
 		matches!(self, Self::Never)
 	}
 
@@ -68,18 +68,6 @@ impl<'tcx> Generator<'tcx, '_> {
 
 		Self::new(tcx, context)
 	}
-
-	pub fn get_output(&mut self) -> fn() -> i64 {
-		todo!()
-		// #[allow(unsafe_code)]
-		// let ret = unsafe {
-		// 	self.jit
-		// 		.get_function::<unsafe extern "C" fn() -> i64>(func.get_name().to_str().unwrap())
-		// }
-		// .unwrap();
-		// #[allow(unsafe_code)]
-		// Ok(unsafe { ret.call() })
-	}
 }
 
 impl<'tcx, 'ctx> Generator<'tcx, 'ctx> {
@@ -99,54 +87,13 @@ impl<'tcx, 'ctx> Generator<'tcx, 'ctx> {
 			variables: HashMap::new(),
 		}
 	}
-}
-
-impl<'ctx> Backend for Generator<'_, 'ctx> {
-	type FuncId = FunctionValue<'ctx>;
-
-	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment) {
-		let mut id_map = HashMap::new();
-
-		for item in hir.items {
-			match item.kind {
-				hir::ItemKind::Extern { ident, decl } => {
-					// TODO: do this elsewhere
-					let decl = self.tcx.lower_fn_decl(decl);
-					self.declare_extern(ident.name, &decl).unwrap();
-				}
-				hir::ItemKind::Function { ident, decl, .. } => {
-					// TODO: do this elsewhere
-					let decl = self.tcx.lower_fn_decl(decl);
-					let func_id = self.declare_function(ident.name, &decl).unwrap();
-
-					id_map.insert(ident.name, func_id);
-				}
-			}
-		}
-		for item in hir.items {
-			match item.kind {
-				hir::ItemKind::Extern { .. } => {}
-				hir::ItemKind::Function { ident, decl, body } => {
-					// TODO: do this elsewhere
-					let decl = self.tcx.lower_fn_decl(decl);
-
-					let body = self.tcx.typeck_fn(ident, &decl, body, env);
-					if self.tcx.scx.options.print.contains("tbir") {
-						println!("{body:#?}");
-					}
-					let func_id = id_map.get(&ident.name).unwrap();
-					self.define_function(*func_id, &decl, &body).unwrap();
-				}
-			}
-		}
-	}
 
 	fn declare_extern(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<()> {
 		self.define_func(name, decl)?;
 		Ok(())
 	}
 
-	fn declare_function(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<Self::FuncId> {
+	fn declare_function(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<FunctionValue<'ctx>> {
 		if self
 			.module
 			.get_function(&self.tcx.scx.symbols.resolve(name))
@@ -161,7 +108,7 @@ impl<'ctx> Backend for Generator<'_, 'ctx> {
 
 	fn define_function(
 		&mut self,
-		func_val: Self::FuncId,
+		func_val: FunctionValue<'ctx>,
 		decl: &ty::FnDecl,
 		body: &tbir::Block,
 	) -> Result<()> {
@@ -198,6 +145,65 @@ impl<'ctx> Backend for Generator<'_, 'ctx> {
 		}
 
 		Ok(())
+	}
+}
+
+impl<'ctx> Backend for Generator<'_, 'ctx> {
+	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment) {
+		let mut id_map = HashMap::new();
+
+		for item in hir.items {
+			match item.kind {
+				hir::ItemKind::Extern { ident, decl } => {
+					// TODO: do this elsewhere
+					let decl = self.tcx.lower_fn_decl(decl);
+					self.declare_extern(ident.name, &decl).unwrap();
+				}
+				hir::ItemKind::Function { ident, decl, .. } => {
+					// TODO: do this elsewhere
+					let decl = self.tcx.lower_fn_decl(decl);
+					let func_id = self.declare_function(ident.name, &decl).unwrap();
+
+					id_map.insert(ident.name, func_id);
+				}
+			}
+		}
+		for item in hir.items {
+			match item.kind {
+				hir::ItemKind::Extern { .. } => {}
+				hir::ItemKind::Function { ident, decl, body } => {
+					// TODO: do this elsewhere
+					let decl = self.tcx.lower_fn_decl(decl);
+
+					let body = self.tcx.typeck_fn(ident, &decl, body, env);
+					if self.tcx.scx.options.print.contains("tbir") {
+						println!("{body:#?}");
+					}
+					let func_id = id_map.get(&ident.name).unwrap();
+					self.define_function(*func_id, &decl, &body).unwrap();
+				}
+			}
+		}
+	}
+}
+
+impl JitBackend for Generator<'_, '_> {
+	fn call_main(&mut self) {
+		todo!()
+		// #[allow(unsafe_code)]
+		// let ret = unsafe {
+		// 	self.jit
+		// 		.get_function::<unsafe extern "C" fn() -> i64>(func.get_name().to_str().unwrap())
+		// }
+		// .unwrap();
+		// #[allow(unsafe_code)]
+		// Ok(unsafe { ret.call() })
+	}
+}
+
+impl ObjectBackend for Generator<'_, '_> {
+	fn get_object(self) -> cranelift_object::ObjectProduct {
+		todo!()
 	}
 }
 
@@ -299,7 +305,9 @@ impl<'ctx> Generator<'_, 'ctx> {
 				let loop_header = self.ctx.append_basic_block(func, "loop");
 				self.builder.position_at_end(loop_header);
 				self.codegen_block(block)?;
-				self.builder.build_unconditional_branch(loop_header);
+				self.builder
+					.build_unconditional_branch(loop_header)
+					.unwrap();
 				Ok(false)
 			}
 		}

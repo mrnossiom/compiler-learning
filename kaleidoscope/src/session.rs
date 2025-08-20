@@ -14,6 +14,8 @@ use ariadne::{Config, IndexType, Report, ReportBuilder};
 use parking_lot::RwLock;
 use string_interner::{StringInterner, Symbol as _, backend::StringBackend, symbol::SymbolU32};
 
+use crate::codegen::AvailableBackend;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
 	pub start: BytePos,
@@ -172,6 +174,7 @@ pub struct Options {
 	pub input: Option<PathBuf>,
 	pub output: Option<PathBuf>,
 
+	pub backend: AvailableBackend,
 	pub jit: bool,
 
 	// TODO: replace with an enum

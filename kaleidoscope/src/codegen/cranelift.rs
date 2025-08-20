@@ -8,7 +8,7 @@ use cranelift_object::{ObjectModule, ObjectProduct};
 
 use crate::{
 	Result, ast,
-	codegen::Backend,
+	codegen::{Backend, JitBackend, ObjectBackend},
 	hir, lexer,
 	resolve::Environment,
 	session::{SessionCtx, Symbol},
@@ -89,19 +89,6 @@ impl<'tcx> Generator<'tcx, JITModule> {
 
 		Self::new(tcx, isa, module)
 	}
-
-	pub fn get_output(&mut self) -> fn() -> i64 {
-		self.module.finalize_definitions().unwrap();
-
-		let main = self.scx.symbols.intern("main");
-		let main_id = self.functions.get(&main).unwrap();
-		let func = self.module.get_finalized_function(*main_id);
-		// TODO: this is unsafe as some functions ask for arguments, and lot a more reasons
-		#[allow(unsafe_code)]
-		let main = unsafe { std::mem::transmute::<*const u8, fn() -> i64>(func) };
-
-		main
-	}
 }
 
 impl<'tcx> Generator<'tcx, ObjectModule> {
@@ -125,10 +112,6 @@ impl<'tcx> Generator<'tcx, ObjectModule> {
 		let module = ObjectModule::new(builder);
 
 		Self::new(tcx, isa, module)
-	}
-
-	pub fn get_output(self) -> ObjectProduct {
-		self.module.finish()
 	}
 }
 
@@ -170,47 +153,6 @@ impl<M: Module> Generator<'_, M> {
 		self.functions.insert(name, func_id);
 		Ok(func_id)
 	}
-}
-
-impl<M: Module> Backend for Generator<'_, M> {
-	type FuncId = FuncId;
-
-	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment) {
-		let mut id_map = HashMap::new();
-
-		for item in hir.items {
-			match item.kind {
-				hir::ItemKind::Extern { ident, decl } => {
-					// TODO: do this elsewhere
-					let decl = self.tcx.lower_fn_decl(decl);
-					self.declare_extern(ident.name, &decl).unwrap();
-				}
-				hir::ItemKind::Function { ident, decl, .. } => {
-					// TODO: do this elsewhere
-					let decl = self.tcx.lower_fn_decl(decl);
-					let func_id = self.declare_function(ident.name, &decl).unwrap();
-
-					id_map.insert(ident.name, func_id);
-				}
-			}
-		}
-		for item in hir.items {
-			match item.kind {
-				hir::ItemKind::Extern { .. } => {}
-				hir::ItemKind::Function { ident, decl, body } => {
-					// TODO: do this elsewhere
-					let decl = self.tcx.lower_fn_decl(decl);
-
-					let body = self.tcx.typeck_fn(ident, &decl, body, env);
-					if self.scx.options.print.contains("tbir") {
-						println!("{body:#?}");
-					}
-					let func_id = id_map.get(&ident.name).unwrap();
-					self.define_function(*func_id, &decl, &body).unwrap();
-				}
-			}
-		}
-	}
 
 	#[tracing::instrument(level = "debug", skip(self, decl))]
 	fn declare_extern(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<()> {
@@ -219,14 +161,14 @@ impl<M: Module> Backend for Generator<'_, M> {
 	}
 
 	#[tracing::instrument(level = "debug", skip(self, decl))]
-	fn declare_function(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<Self::FuncId> {
+	fn declare_function(&mut self, name: Symbol, decl: &ty::FnDecl) -> Result<FuncId> {
 		let func_id = self.declare_func(name, decl, Linkage::Export)?;
 		Ok(func_id)
 	}
 
 	fn define_function(
 		&mut self,
-		func_id: Self::FuncId,
+		func_id: FuncId,
 		decl: &ty::FnDecl,
 		body: &tbir::Block,
 	) -> Result<()> {
@@ -291,6 +233,66 @@ impl<M: Module> Backend for Generator<'_, M> {
 		self.module.clear_context(&mut context);
 
 		Ok(())
+	}
+}
+
+impl<M: Module> Backend for Generator<'_, M> {
+	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment) {
+		let mut id_map = HashMap::new();
+
+		for item in hir.items {
+			match item.kind {
+				hir::ItemKind::Extern { ident, decl } => {
+					// TODO: do this elsewhere
+					let decl = self.tcx.lower_fn_decl(decl);
+					self.declare_extern(ident.name, &decl).unwrap();
+				}
+				hir::ItemKind::Function { ident, decl, .. } => {
+					// TODO: do this elsewhere
+					let decl = self.tcx.lower_fn_decl(decl);
+					let func_id = self.declare_function(ident.name, &decl).unwrap();
+
+					id_map.insert(ident.name, func_id);
+				}
+			}
+		}
+		for item in hir.items {
+			match item.kind {
+				hir::ItemKind::Extern { .. } => {}
+				hir::ItemKind::Function { ident, decl, body } => {
+					// TODO: do this elsewhere
+					let decl = self.tcx.lower_fn_decl(decl);
+
+					let body = self.tcx.typeck_fn(ident, &decl, body, env);
+					if self.scx.options.print.contains("tbir") {
+						println!("{body:#?}");
+					}
+					let func_id = id_map.get(&ident.name).unwrap();
+					self.define_function(*func_id, &decl, &body).unwrap();
+				}
+			}
+		}
+	}
+}
+
+impl JitBackend for Generator<'_, JITModule> {
+	fn call_main(&mut self) {
+		self.module.finalize_definitions().unwrap();
+
+		let main = self.scx.symbols.intern("main");
+		let main_id = self.functions.get(&main).unwrap();
+		let func = self.module.get_finalized_function(*main_id);
+		// TODO: this is unsafe as some functions ask for arguments, and lot a more reasons
+		#[allow(unsafe_code)]
+		let main = unsafe { std::mem::transmute::<*const u8, fn()>(func) };
+
+		main();
+	}
+}
+
+impl ObjectBackend for Generator<'_, ObjectModule> {
+	fn get_object(self) -> ObjectProduct {
+		self.module.finish()
 	}
 }
 

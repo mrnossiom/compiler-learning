@@ -13,10 +13,10 @@ use inkwell::{
 
 use crate::{
 	Result, ast,
-	codegen::{Backend, JitBackend, ObjectBackend},
+	codegen::{CodeGenBackend, JitBackend, ObjectBackend},
 	hir, lexer,
 	resolve::Environment,
-	session::Symbol,
+	session::{PrintKind, Symbol},
 	tbir,
 	ty::{self, TyCtx},
 };
@@ -140,7 +140,7 @@ impl<'tcx, 'ctx> Generator<'tcx, 'ctx> {
 			return Err("function is invalid");
 		}
 
-		if self.tcx.scx.options.print.contains("bir") {
+		if self.tcx.scx.options.print.contains(&PrintKind::BackendIr) {
 			func_val.print_to_stderr();
 		}
 
@@ -148,7 +148,7 @@ impl<'tcx, 'ctx> Generator<'tcx, 'ctx> {
 	}
 }
 
-impl<'ctx> Backend for Generator<'_, 'ctx> {
+impl<'ctx> CodeGenBackend for Generator<'_, 'ctx> {
 	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment) {
 		let mut id_map = HashMap::new();
 
@@ -176,7 +176,7 @@ impl<'ctx> Backend for Generator<'_, 'ctx> {
 					let decl = self.tcx.lower_fn_decl(decl);
 
 					let body = self.tcx.typeck_fn(ident, &decl, body, env);
-					if self.tcx.scx.options.print.contains("tbir") {
+					if self.tcx.scx.options.print.contains(&PrintKind::TypedBodyIr) {
 						println!("{body:#?}");
 					}
 					let func_id = id_map.get(&ident.name).unwrap();

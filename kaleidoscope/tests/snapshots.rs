@@ -2,7 +2,7 @@ use kaleic::{lowerer, parser, session};
 
 #[test]
 fn fibo() {
-	let source = include_str!("../samples/fibonacci.txt");
+	let source = include_str!("../samples/fibonacci.kl");
 
 	let scx = session::SessionCtx::default();
 

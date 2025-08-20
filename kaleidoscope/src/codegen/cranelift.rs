@@ -8,10 +8,10 @@ use cranelift_object::{ObjectModule, ObjectProduct};
 
 use crate::{
 	Result, ast,
-	codegen::{Backend, JitBackend, ObjectBackend},
+	codegen::{CodeGenBackend, JitBackend, ObjectBackend},
 	hir, lexer,
 	resolve::Environment,
-	session::{SessionCtx, Symbol},
+	session::{PrintKind, SessionCtx, Symbol},
 	tbir,
 	ty::{self, TyCtx},
 };
@@ -24,10 +24,9 @@ pub enum MaybeValue {
 }
 
 impl MaybeValue {
-	// surely the worst name ever given to a function
-	fn as_slice(self, func: impl FnOnce(&[Value])) {
+	fn with_slice(&self, func: impl FnOnce(&[Value])) {
 		match self {
-			Self::Value(val) => func(&[val]),
+			Self::Value(val) => func(&[*val]),
 			Self::Zst => func(&[]),
 			Self::Never => {}
 		}
@@ -214,7 +213,7 @@ impl<M: Module> Generator<'_, M> {
 		};
 
 		let return_value = generator.codegen_block(body)?;
-		return_value.as_slice(|vals| {
+		return_value.with_slice(|vals| {
 			generator.builder.ins().return_(vals);
 		});
 
@@ -224,7 +223,7 @@ impl<M: Module> Generator<'_, M> {
 			.optimize(self.module.isa(), &mut ControlPlane::default())
 			.unwrap();
 
-		if self.scx.options.print.contains("bir") {
+		if self.scx.options.print.contains(&PrintKind::BackendIr) {
 			print!("{}", context.func.display());
 		}
 
@@ -236,7 +235,7 @@ impl<M: Module> Generator<'_, M> {
 	}
 }
 
-impl<M: Module> Backend for Generator<'_, M> {
+impl<M: Module> CodeGenBackend for Generator<'_, M> {
 	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment) {
 		let mut id_map = HashMap::new();
 
@@ -264,7 +263,7 @@ impl<M: Module> Backend for Generator<'_, M> {
 					let decl = self.tcx.lower_fn_decl(decl);
 
 					let body = self.tcx.typeck_fn(ident, &decl, body, env);
-					if self.scx.options.print.contains("tbir") {
+					if self.scx.options.print.contains(&PrintKind::TypedBodyIr) {
 						println!("{body:#?}");
 					}
 					let func_id = id_map.get(&ident.name).unwrap();

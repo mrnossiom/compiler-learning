@@ -11,14 +11,14 @@ pub use self::cranelift::Generator as CraneliftBackend;
 pub use self::llvm::Generator as LlvmBackend;
 
 #[derive(Debug)]
-pub enum AvailableBackend {
+pub enum Backend {
 	#[cfg(feature = "cranelift")]
 	Cranelift,
 	#[cfg(feature = "llvm")]
 	Llvm,
 }
 
-impl Default for AvailableBackend {
+impl Default for Backend {
 	fn default() -> Self {
 		#[cfg(feature = "cranelift")]
 		return Self::Cranelift;
@@ -27,15 +27,15 @@ impl Default for AvailableBackend {
 	}
 }
 
-pub trait Backend {
+pub trait CodeGenBackend {
 	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment);
 }
 
-pub trait JitBackend: Backend {
+pub trait JitBackend: CodeGenBackend {
 	fn call_main(&mut self);
 }
 
-pub trait ObjectBackend: Backend {
+pub trait ObjectBackend: CodeGenBackend {
 	// TODO: change to common object
 	fn get_object(self) -> cranelift_object::ObjectProduct;
 }

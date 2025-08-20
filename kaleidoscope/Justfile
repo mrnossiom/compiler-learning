@@ -2,5 +2,4 @@ _default:
 	@just --list --unsorted --list-heading '' --list-prefix '—— '
 
 run *ARGS:
-	RUSTFLAGS="-Clink-args=-rdynamic -Clink-arg=-Wl,--no-as-needed -Clink-arg=-lm" \
-		cargo run {{ARGS}}
+	cargo run -F debug -- {{ARGS}}

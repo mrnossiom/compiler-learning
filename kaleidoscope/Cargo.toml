@@ -32,7 +32,8 @@ insta = "1"
 ariadne = { git = "https://github.com/mrnossiom/ariadne", branch = "expose-report-fields" }
 
 [features]
-default = ["llvm", "cranelift"]
+default = ["cranelift"]
+# default = ["llvm", "cranelift"]
 
 debug = []
 
@@ -68,5 +69,8 @@ unwrap_used = "warn"
 # print_stderr = "warn"
 # print_stdout = "warn"
 
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 must_use_candidate = "allow"
+option_if_let_else = "allow"
 wildcard_imports = "allow"

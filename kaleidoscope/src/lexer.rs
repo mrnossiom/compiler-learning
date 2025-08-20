@@ -1,5 +1,6 @@
 //! Source code to tokens lexing logic
 
+use core::fmt;
 use std::str::Chars;
 
 use crate::ast::Ident;
@@ -82,11 +83,50 @@ pub enum TokenKind {
 	Eof,
 }
 
+impl fmt::Display for TokenKind {
+	/// Should fit in the sentence "found {}"
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Ident(_) => write!(f, "an identifier"),
+			Keyword(_) => write!(f, "a keyword"),
+			Literal(kind, _) => write!(f, "a {kind} literal"),
+
+			BinOp(_) => write!(f, "a binary operator"),
+
+			Open(kind) => write!(f, "an opening {kind}"),
+			Close(kind) => write!(f, "a closing {kind}"),
+
+			Arrow => write!(f, "an arrow"),
+			Comma => write!(f, "a comma"),
+			Colon => write!(f, "a colon"),
+			Semi => write!(f, "a semicolon"),
+			Dot => write!(f, "a dot"),
+
+			Not => write!(f, "a negate sign"),
+			Eq => write!(f, "an assign sign"),
+
+			Unknown => write!(f, "an unknown token"),
+			Eof => write!(f, "the end of the file"),
+		}
+	}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiteralKind {
 	Integer,
 	Float,
 	Str,
+}
+
+impl fmt::Display for LiteralKind {
+	/// Should fit in the sentence "a {} literal"
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Integer => write!(f, "integer"),
+			Float => write!(f, "float"),
+			Str => write!(f, "string"),
+		}
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +155,18 @@ pub enum Delimiter {
 	Brace,
 	// Lexemes are `Lt` and `Gt`
 	Angled,
+}
+
+impl fmt::Display for Delimiter {
+	/// Should fit in the sentence "an opening {}" / "a closing {}"
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Paren => write!(f, "parenthesis"),
+			Bracket => write!(f, "bracket"),
+			Brace => write!(f, "brace"),
+			Angled => write!(f, "angle bracket"),
+		}
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,7 +332,7 @@ impl Lexer<'_, '_> {
 
 				// Non-significative whitespace
 				c if c.is_ascii_whitespace() => {
-					spacing = Spacing::Joint;
+					spacing = Spacing::Alone;
 					continue;
 				}
 
@@ -299,14 +351,14 @@ impl Lexer<'_, '_> {
 					'/' => {
 						// eat the whole line
 						self.bump_while(|c| c != '\n');
-						spacing = Spacing::Joint;
+						spacing = Spacing::Alone;
 						continue;
 					}
 					'*' => {
 						// eat the star
 						self.bump();
 						self.skip_block_comment();
-						spacing = Spacing::Joint;
+						spacing = Spacing::Alone;
 						continue;
 					}
 					_ => BinOp(Div),

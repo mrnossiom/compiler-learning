@@ -11,6 +11,7 @@ use crate::{
 		Block, Expr, ExprKind, FnDecl, Ident, Item, ItemKind, NodeId, Root, Spanned, Stmt,
 		StmtKind, Ty, TyKind,
 	},
+	bug,
 	lexer::{Delimiter, Lexer, Token, TokenKind},
 	session::{Diagnostic, SessionCtx, SourceFile},
 };
@@ -18,7 +19,7 @@ use crate::{
 pub type PResult<T> = Result<T, Diagnostic>;
 
 pub struct Parser<'scx> {
-	scx: &'scx SessionCtx,
+	_scx: &'scx SessionCtx,
 
 	lexer: Lexer<'scx, 'scx>,
 
@@ -31,7 +32,7 @@ pub struct Parser<'scx> {
 impl<'scx> Parser<'scx> {
 	pub fn new(scx: &'scx SessionCtx, file: &'scx SourceFile) -> Self {
 		let mut parser = Self {
-			scx,
+			_scx: scx,
 
 			lexer: Lexer::new(scx, &file.content, file.offset),
 
@@ -69,15 +70,15 @@ impl Parser<'_> {
 	}
 
 	#[track_caller]
-	fn expect(&mut self, token: TokenKind) -> PResult<Token> {
-		if self.check(token) {
+	fn expect(&mut self, token_kind: TokenKind) -> PResult<Token> {
+		if self.check(token_kind) {
 			self.bump();
 			Ok(self.token)
 		} else {
 			let report = Report::build(ReportKind::Error, self.token.span)
-				.with_message(format!("expected kind {token:?}"))
+				.with_message(format!("expected {token_kind}"))
 				.with_label(
-					Label::new(self.token.span).with_message(format!("got {:?}", self.token)),
+					Label::new(self.token.span).with_message(format!("got {}", self.token.kind)),
 				);
 			Err(Diagnostic::new(report))
 		}
@@ -92,7 +93,7 @@ impl Parser<'_> {
 	fn expect_ident(&mut self) -> PResult<Ident> {
 		self.eat_ident().ok_or_else(|| {
 			let report = Report::build(ReportKind::Error, self.token.span)
-				.with_message(format!("expected an ident"))
+				.with_message("expected an ident".to_string())
 				.with_label(
 					Label::new(self.token.span).with_message(format!("got {:?}", self.token)),
 				);
@@ -125,9 +126,12 @@ impl Parser<'_> {
 		self.lexer.clone().next().map_or(Eof, |tkn| tkn.kind)
 	}
 
-	const fn make_node_id(&mut self) -> NodeId {
+	fn make_node_id(&mut self) -> NodeId {
 		let node_id = NodeId(self.next_node_id);
-		self.next_node_id = self.next_node_id.checked_add(1).unwrap();
+		self.next_node_id = self
+			.next_node_id
+			.checked_add(1)
+			.unwrap_or_else(|| bug!("tried to construct too much `parser::NodeId`s"));
 		node_id
 	}
 }
@@ -189,10 +193,10 @@ impl Parser<'_> {
 
 			_ => {
 				let report = Report::build(ReportKind::Error, self.token.span)
-					.with_message(format!("expected an expression"))
+					.with_message("expected an expression".to_string())
 					.with_label(
 						Label::new(self.token.span)
-							.with_message(format!("got an unexpected token")),
+							.with_message("got an unexpected token".to_string()),
 					);
 				return Err(Diagnostic::new(report));
 			}
@@ -395,9 +399,18 @@ impl Parser<'_> {
 impl Parser<'_> {
 	fn parse_ty(&mut self) -> PResult<Ty> {
 		tracing::trace!(cur = ?self.token.kind, "parse_ty");
+		#[expect(clippy::single_match_else, reason = "more type forms to come?")]
 		match self.token.kind {
 			Ident(_) => self.parse_ty_path(),
-			_ => todo!("unknown ty type"),
+			_ => {
+				let report = Report::build(ReportKind::Error, self.token.span)
+					.with_message("expected a type")
+					.with_label(
+						Label::new(self.token.span)
+							.with_message(format!("but found {}", self.token.kind)),
+					);
+				Err(Diagnostic::new(report))
+			}
 		}
 	}
 

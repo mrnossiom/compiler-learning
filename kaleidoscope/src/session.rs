@@ -8,13 +8,14 @@ use std::{
 	path::{Path, PathBuf},
 	process,
 	rc::Rc,
+	sync::atomic::{AtomicBool, Ordering},
 };
 
-use ariadne::{Config, IndexType, Report, ReportBuilder};
+use ariadne::{Config, IndexType, ReportKind};
 use parking_lot::RwLock;
 use string_interner::{StringInterner, Symbol as _, backend::StringBackend, symbol::SymbolU32};
 
-use crate::codegen::AvailableBackend;
+use crate::{bug, codegen::Backend};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
@@ -113,12 +114,17 @@ thread_local! {
 	static INTERNER: std::sync::OnceLock<std::sync::Arc<RwLock<StringInterner<StringBackend>>>> = std::sync::OnceLock::default();
 }
 
-#[derive(Debug)]
 pub struct SymbolInterner {
 	#[cfg(feature = "debug")]
 	inner: std::sync::Arc<RwLock<StringInterner<StringBackend>>>,
 	#[cfg(not(feature = "debug"))]
 	inner: RwLock<StringInterner<StringBackend>>,
+}
+
+impl fmt::Debug for SymbolInterner {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("SymbolInterner").finish_non_exhaustive()
+	}
 }
 
 impl Default for SymbolInterner {
@@ -142,31 +148,95 @@ impl SymbolInterner {
 
 	#[must_use]
 	pub fn resolve(&self, symbol: Symbol) -> String {
-		self.inner.read().resolve(symbol.0).unwrap().to_owned()
+		match self.inner.read().resolve(symbol.0) {
+			Some(s) => s.to_owned(),
+			None => bug!("there is a single symbol interner, thus all symbol are valid"),
+		}
 	}
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SessionCtx {
 	pub options: Options,
+	pub diag_cx: DiagnosticCtx,
 
 	pub symbols: SymbolInterner,
-	pub source_map: RwLock<SourceMap>,
+	pub source_map: Rc<RwLock<SourceMap>>,
 }
 
 impl SessionCtx {
-	pub fn emit_diagnostic(&self, diag: &Diagnostic) {
+	pub fn new() -> Self {
+		let source_map = Rc::new(RwLock::new(SourceMap::default()));
+		let diag_cx = DiagnosticCtx::new(source_map.clone());
+		Self {
+			options: Options::default(),
+			diag_cx,
+			symbols: SymbolInterner::default(),
+			source_map,
+		}
+	}
+
+	pub const fn dcx(&self) -> &DiagnosticCtx {
+		&self.diag_cx
+	}
+}
+
+impl Default for SessionCtx {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+#[derive(Debug)]
+pub struct DiagnosticCtx {
+	degraded: AtomicBool,
+
+	source_map: Rc<RwLock<SourceMap>>,
+}
+
+impl DiagnosticCtx {
+	fn new(source_map: Rc<RwLock<SourceMap>>) -> Self {
+		Self {
+			degraded: AtomicBool::default(),
+			source_map,
+		}
+	}
+
+	#[track_caller]
+	pub fn emit_build(&self, diag_builder: ReportBuilder) {
+		self.emit(&Diagnostic::new(diag_builder));
+	}
+
+	pub fn emit(&self, diag: &Diagnostic) {
+		if diag.report.kind == ReportKind::Error {
+			self.degraded.store(true, Ordering::Relaxed);
+		}
+
 		let cache = self.source_map.read();
-		diag.report.eprint(&*cache).unwrap();
+		if let Err(err) = diag.report.write(&*cache, io::stderr()) {
+			tracing::error!(?err, "could not print diagnostic");
+		}
 
 		#[cfg(feature = "debug")]
 		eprintln!("error was emitted here: {}", diag.loc);
 	}
 
-	pub fn emit_fatal_diagnostic(&self, diagnostic: &Diagnostic) -> ! {
-		self.emit_diagnostic(diagnostic);
+	pub fn emit_fatal(&self, diagnostic: &Diagnostic) -> ! {
+		self.emit(diagnostic);
 		process::exit(1);
 	}
+
+	pub fn check_sane_or_exit(&self) {
+		if self.degraded.load(Ordering::Relaxed) {}
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PrintKind {
+	Ast,
+	HigherIr,
+	TypedBodyIr,
+	BackendIr,
 }
 
 #[derive(Debug, Default)]
@@ -174,16 +244,16 @@ pub struct Options {
 	pub input: Option<PathBuf>,
 	pub output: Option<PathBuf>,
 
-	pub backend: AvailableBackend,
+	pub backend: Backend,
 	pub jit: bool,
 
 	// TODO: replace with an enum
-	pub print: HashSet<String>,
+	pub print: HashSet<PrintKind>,
 }
 
 #[derive(Debug)]
 pub struct Diagnostic {
-	report: Box<Report<'static, Span>>,
+	report: Box<Report>,
 	#[cfg(feature = "debug")]
 	loc: &'static std::panic::Location<'static>,
 }
@@ -191,7 +261,7 @@ pub struct Diagnostic {
 impl Diagnostic {
 	#[must_use]
 	#[track_caller]
-	pub fn new(report: ReportBuilder<'static, Span>) -> Self {
+	pub fn new(report: ReportBuilder) -> Self {
 		let config = Config::new().with_index_type(IndexType::Byte);
 		Self {
 			report: Box::new(report.with_config(config).finish()),
@@ -217,15 +287,26 @@ pub struct SourceMap {
 
 impl SourceMap {
 	pub fn load_source_from_file(&mut self, path: &Path) -> io::Result<Rc<SourceFile>> {
-		let filename = path.file_name().unwrap();
+		let filename = path
+			.file_name()
+			.ok_or_else(|| io::Error::other("expected a source file"))?;
 		let src = std::fs::read_to_string(path)?;
 
-		let source = self.load_source(&filename.to_string_lossy(), src);
+		let filename = filename.to_string_lossy();
+
+		let ext = filename.split('.').next_back().unwrap_or("");
+		#[expect(clippy::manual_assert, reason = "to be replaced")]
+		if ext != "kl" {
+			// TODO: use diagnostic ctx
+			panic!("file extension is not `kl`")
+		}
+
+		let source = self.load_source(&filename, src);
 		Ok(source)
 	}
 
 	pub fn load_source(&mut self, name: &str, src: String) -> Rc<SourceFile> {
-		let src_len = u32::try_from(src.len()).unwrap();
+		let src_len = BytePos::from_usize(src.len());
 
 		let src_file = Rc::new(SourceFile {
 			name: name.to_owned(),
@@ -237,7 +318,7 @@ impl SourceMap {
 
 		self.sources.push(src_file.clone());
 		self.diagnostic_sources.push(diagnostic_src);
-		self.offset = self.offset + BytePos(src_len);
+		self.offset = self.offset + src_len;
 
 		src_file
 	}
@@ -277,11 +358,11 @@ impl ariadne::Cache<BytePos> for &SourceMap {
 pub struct FileIdx(usize);
 
 impl FileIdx {
-	fn new(idx: usize) -> Self {
+	const fn new(idx: usize) -> Self {
 		Self(idx)
 	}
 
-	fn to_usize(self) -> usize {
+	const fn to_usize(self) -> usize {
 		self.0
 	}
 }
@@ -290,33 +371,39 @@ impl FileIdx {
 pub struct BytePos(u32);
 
 impl BytePos {
-	pub fn from_u32(pos: u32) -> Self {
-		BytePos(pos)
+	pub const fn from_u32(pos: u32) -> Self {
+		Self(pos)
 	}
 
 	pub fn from_usize(pos: usize) -> Self {
-		BytePos(u32::try_from(pos).unwrap())
+		match u32::try_from(pos) {
+			Ok(pos) => Self(pos),
+			Err(_) => bug!("tried to construct a `BytePos` out of valid values"),
+		}
 	}
 
-	pub fn to_u32(self) -> u32 {
+	pub const fn to_u32(self) -> u32 {
 		self.0
 	}
 
-	pub fn to_usize(self) -> usize {
+	pub const fn to_usize(self) -> usize {
 		self.0 as usize
 	}
 }
 
 impl ops::Add for BytePos {
-	type Output = BytePos;
+	type Output = Self;
 	fn add(self, rhs: Self) -> Self::Output {
 		Self(self.0 + rhs.0)
 	}
 }
 
 impl ops::Sub for BytePos {
-	type Output = BytePos;
+	type Output = Self;
 	fn sub(self, rhs: Self) -> Self::Output {
 		Self(self.0 - rhs.0)
 	}
 }
+
+pub type Report = ariadne::Report<'static, Span>;
+pub type ReportBuilder = ariadne::ReportBuilder<'static, Span>;

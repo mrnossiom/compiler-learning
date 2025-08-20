@@ -1,9 +1,9 @@
-extern fn putchard(c: uint);
+fn putchard(c: uint);
 
 fn hello_world() { }
 
 fn main() uint {
-	a :uint= 0;
+	a = 0;
 	
 	hello_world();
 

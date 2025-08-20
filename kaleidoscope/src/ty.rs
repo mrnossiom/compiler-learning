@@ -3,13 +3,13 @@ use std::{
 	sync::atomic::{AtomicU32, Ordering},
 };
 
-use ariadne::{Label, Report, ReportKind};
+use ariadne::{Label, ReportKind};
 
 use crate::{
 	ast::{self, Ident},
 	hir, lexer,
 	resolve::Environment,
-	session::{Diagnostic, SessionCtx, Span, Symbol},
+	session::{Report, SessionCtx, Span, Symbol},
 	tbir,
 };
 
@@ -59,7 +59,7 @@ impl TyCtx<'_> {
 									"expression is unconstrainted, thus has no type",
 								));
 
-						self.scx.emit_diagnostic(&Diagnostic::new(report));
+						self.scx.dcx().emit_build(report);
 						break;
 					};
 					match ty.clone().as_no_infer() {

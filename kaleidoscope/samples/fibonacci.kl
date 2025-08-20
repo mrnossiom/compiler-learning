@@ -82,4 +82,3 @@ fn fibo(n: uint) uint {
 
 	b
 }
-

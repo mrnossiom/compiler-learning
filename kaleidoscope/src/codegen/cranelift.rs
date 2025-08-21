@@ -59,12 +59,16 @@ impl<'tcx, M: Module> Generator<'tcx, M> {
 	// TODO: remove duplicate on function generator
 	fn to_cl_type(&self, output: &ty::TyKind) -> Option<Type> {
 		match output.clone() {
-			ty::TyKind::Void | ty::TyKind::Never => None,
-			ty::TyKind::Bool => Some(types::I8),
-			ty::TyKind::UnsignedInt | ty::TyKind::SignedInt => Some(types::I32),
-			ty::TyKind::Float => Some(types::F32),
-			ty::TyKind::Str => todo!(),
+			ty::TyKind::Primitive(kind) => match kind {
+				ty::PrimitiveKind::Void | ty::PrimitiveKind::Never => None,
+				ty::PrimitiveKind::Bool => Some(types::I8),
+				ty::PrimitiveKind::UnsignedInt | ty::PrimitiveKind::SignedInt => Some(types::I32),
+				ty::PrimitiveKind::Float => Some(types::F32),
+				ty::PrimitiveKind::Str => todo!(),
+			},
+			ty::TyKind::Pointer(_kind) => todo!(),
 			ty::TyKind::Fn(_fn_decl) => Some(self.isa.pointer_type()),
+			ty::TyKind::Adt(()) => todo!(),
 			ty::TyKind::Error => {
 				bug!("error type kind is a placeholder and should not reach codegen")
 			}
@@ -314,12 +318,16 @@ impl FunctionGenerator<'_, '_> {
 	// TODO: remove duplicate
 	fn to_cl_type(&self, output: &ty::TyKind) -> Option<Type> {
 		match output.clone() {
-			ty::TyKind::Void | ty::TyKind::Never => None,
-			ty::TyKind::Bool => Some(types::I8),
-			ty::TyKind::UnsignedInt | ty::TyKind::SignedInt => Some(types::I32),
-			ty::TyKind::Float => Some(types::F32),
-			ty::TyKind::Str => todo!("str type is not implemented"),
+			ty::TyKind::Primitive(kind) => match kind {
+				ty::PrimitiveKind::Void | ty::PrimitiveKind::Never => None,
+				ty::PrimitiveKind::Bool => Some(types::I8),
+				ty::PrimitiveKind::UnsignedInt | ty::PrimitiveKind::SignedInt => Some(types::I32),
+				ty::PrimitiveKind::Float => Some(types::F32),
+				ty::PrimitiveKind::Str => todo!(),
+			},
+			ty::TyKind::Pointer(_kind) => todo!(),
 			ty::TyKind::Fn(_fn_decl) => Some(self.isa.pointer_type()),
+			ty::TyKind::Adt(()) => todo!(),
 			ty::TyKind::Error => {
 				bug!("error type kind is a placeholder and should not reach codegen")
 			}

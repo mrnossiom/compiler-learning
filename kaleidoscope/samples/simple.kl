@@ -1,8 +1,8 @@
 extern fn putchar(chr: uint);
-extern fn puts(s: *cstr);
-
-fn foo(a: bool) void {}
+// extern fn puts(s: *cstr);
+extern fn puts(s: *str);
 
 fn main() void {
-	foo(123, 345);
+	// puts(c"Hello, World!");
+	puts("Hello, World!");
 }

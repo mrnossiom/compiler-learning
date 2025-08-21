@@ -56,10 +56,11 @@ impl TyCtx<'_> {
 						// set default types for expression that can be inferred via literals
 						match infer {
 							Infer::Integer => {
-								expr_tys.insert(node_id, TyKind::SignedInt);
+								expr_tys
+									.insert(node_id, TyKind::Primitive(PrimitiveKind::SignedInt));
 							}
 							Infer::Float => {
-								expr_tys.insert(node_id, TyKind::Float);
+								expr_tys.insert(node_id, TyKind::Primitive(PrimitiveKind::Float));
 							}
 							Infer::Generic | Infer::Explicit => {
 								let report = errors::ty::report_unconstrained(span);
@@ -100,7 +101,8 @@ impl TyCtx<'_> {
 	fn lower_ty(&self, ty: &ast::Ty) -> TyKind<Infer> {
 		match &ty.kind {
 			ast::TyKind::Path(path, _generics) => self.lower_path_ty(path[0]),
-			ast::TyKind::Unit => TyKind::Void,
+			ast::TyKind::Pointer(ty) => TyKind::Pointer(Box::new(self.lower_ty(ty))),
+			ast::TyKind::Unit => TyKind::Primitive(PrimitiveKind::Void),
 			ast::TyKind::Infer => TyKind::Infer(self.next_infer_tag(), Infer::Explicit),
 		}
 	}
@@ -137,15 +139,15 @@ impl TyCtx<'_> {
 		match self.scx.symbols.resolve(path.name).as_str() {
 			"_" => TyKind::Infer(self.next_infer_tag(), Infer::Explicit),
 
-			"void" => TyKind::Void,
-			"never" => TyKind::Never,
+			"void" => TyKind::Primitive(PrimitiveKind::Void),
+			"never" => TyKind::Primitive(PrimitiveKind::Never),
 
-			"bool" => TyKind::Bool,
-			"uint" => TyKind::UnsignedInt,
-			"sint" => TyKind::SignedInt,
-			"float" => TyKind::Float,
+			"bool" => TyKind::Primitive(PrimitiveKind::Bool),
+			"uint" => TyKind::Primitive(PrimitiveKind::UnsignedInt),
+			"sint" => TyKind::Primitive(PrimitiveKind::SignedInt),
+			"float" => TyKind::Primitive(PrimitiveKind::Float),
 
-			"str" => TyKind::Str,
+			"str" => TyKind::Primitive(PrimitiveKind::Str),
 
 			_ => {
 				let report = errors::ty::type_unknown(path.span);
@@ -232,7 +234,11 @@ impl Inferer<'_> {
 			self.infer_stmt(stmt);
 		}
 
-		let expected_ret_ty = block.ret.map_or(TyKind::Void, |expr| self.infer_expr(expr));
+		let expected_ret_ty = block
+			.ret
+			.map_or(TyKind::Primitive(PrimitiveKind::Void), |expr| {
+				self.infer_expr(expr)
+			});
 
 		#[expect(clippy::let_and_return)]
 		expected_ret_ty
@@ -257,7 +263,7 @@ impl Inferer<'_> {
 			}
 			hir::StmtKind::Loop { block } => {
 				let block_ty = self.infer_block(block);
-				self.unify(&TyKind::Void, &block_ty);
+				self.unify(&TyKind::Primitive(PrimitiveKind::Void), &block_ty);
 			}
 		}
 	}
@@ -270,22 +276,24 @@ impl Inferer<'_> {
 					TyKind::Infer(self.tcx.next_infer_tag(), Infer::Integer)
 				}
 				lexer::LiteralKind::Float => TyKind::Infer(self.tcx.next_infer_tag(), Infer::Float),
-				lexer::LiteralKind::Str => TyKind::Str,
+				lexer::LiteralKind::Str => TyKind::Primitive(PrimitiveKind::Str),
 			},
 			hir::ExprKind::Binary(op, left, right) => {
 				let left = self.infer_expr(left);
 				let right = self.infer_expr(right);
 
 				// TODO: allow with bools
-				self.unify(&TyKind::UnsignedInt, &left);
-				self.unify(&TyKind::UnsignedInt, &right);
+				self.unify(&TyKind::Primitive(PrimitiveKind::UnsignedInt), &left);
+				self.unify(&TyKind::Primitive(PrimitiveKind::UnsignedInt), &right);
 
 				#[allow(clippy::enum_glob_use)]
 				let expected = {
 					use lexer::BinOp::*;
 					match op.bit {
-						Plus | Minus | Mul | Div | Mod => TyKind::UnsignedInt,
-						Gt | Ge | Lt | Le | EqEq | Ne => TyKind::Bool,
+						Plus | Minus | Mul | Div | Mod => {
+							TyKind::Primitive(PrimitiveKind::UnsignedInt)
+						}
+						Gt | Ge | Lt | Le | EqEq | Ne => TyKind::Primitive(PrimitiveKind::Bool),
 					}
 				};
 
@@ -324,19 +332,19 @@ impl Inferer<'_> {
 				altern,
 			} => {
 				let cond_ty = self.infer_expr(cond);
-				self.unify(&TyKind::Bool, &cond_ty);
+				self.unify(&TyKind::Primitive(PrimitiveKind::Bool), &cond_ty);
 
 				let conseq_ty = self.infer_block(conseq);
 				// if no `else` part, then it must return Unit
 				let altern_ty = altern
 					.map(|altern| self.infer_block(altern))
-					.unwrap_or(TyKind::Void);
+					.unwrap_or(TyKind::Primitive(PrimitiveKind::Void));
 
 				self.unify(&conseq_ty, &altern_ty)
 			}
 
 			hir::ExprKind::Return(_) | hir::ExprKind::Break(_) | hir::ExprKind::Continue => {
-				TyKind::Never
+				TyKind::Primitive(PrimitiveKind::Never)
 			}
 		};
 
@@ -361,7 +369,8 @@ impl Inferer<'_> {
 				self.unify_infer(*tag, *infer, ty)
 			}
 			// infer and never have different meaning but both coerces to anything
-			(TyKind::Never, ty) | (ty, TyKind::Never) => ty.clone(),
+			(TyKind::Primitive(PrimitiveKind::Never), ty)
+			| (ty, TyKind::Primitive(PrimitiveKind::Never)) => ty.clone(),
 			// we try to recover further by inferring errors
 			(TyKind::Error, ty) | (ty, TyKind::Error) => ty.clone(),
 
@@ -378,8 +387,11 @@ impl Inferer<'_> {
 	fn unify_infer(&mut self, tag: InferTag, infer: Infer, other: &TyKind<Infer>) -> TyKind<Infer> {
 		tracing::trace!(?tag, ?infer, ?other, "unify_infer");
 		let unified = match (infer, other) {
-			(Infer::Integer, TyKind::UnsignedInt) => TyKind::UnsignedInt,
-			(Infer::Float, TyKind::Float) => TyKind::Float,
+			(
+				Infer::Integer,
+				ty @ TyKind::Primitive(PrimitiveKind::UnsignedInt | PrimitiveKind::SignedInt),
+			) => ty.clone(),
+			(Infer::Float, ty @ TyKind::Primitive(PrimitiveKind::Float)) => ty.clone(),
 			(Infer::Generic | Infer::Explicit, ty) => ty.clone(),
 
 			(_, TyKind::Infer(tag, actual_infer)) => {
@@ -418,6 +430,35 @@ pub struct FnDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TyKind<InferKind = NoInfer> {
+	Primitive(PrimitiveKind),
+	Pointer(Box<Self>),
+
+	Fn(Box<FnDecl>),
+	// TODO
+	Adt(()),
+
+	Infer(InferTag, InferKind),
+	Error,
+}
+
+impl<T: fmt::Display> fmt::Display for TyKind<T> {
+	// Should fit in the sentence "found {}"
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Primitive(kind) => write!(f, "primitive {kind}"),
+			Self::Pointer(ty) => write!(f, "*{ty}"),
+			// TODO: expand args in display
+			Self::Fn(_) => write!(f, "a function"),
+			Self::Adt(()) => write!(f, "an adt"),
+			Self::Infer(_, infer) => infer.fmt(f),
+			// TODO
+			Self::Error => bug!("error ty kind should never be shown to end-user"),
+		}
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrimitiveKind {
 	Void,
 	Never,
 
@@ -427,16 +468,10 @@ pub enum TyKind<InferKind = NoInfer> {
 	Float,
 
 	Str,
-
-	Fn(Box<FnDecl>),
-
-	Infer(InferTag, InferKind),
-
-	Error,
 }
 
-impl<T: fmt::Display> fmt::Display for TyKind<T> {
-	// Should fit in the sentence "found {}"
+impl fmt::Display for PrimitiveKind {
+	// Should fit in the sentence "found primitive {}"
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Self::Void => write!(f, "void"),
@@ -448,13 +483,6 @@ impl<T: fmt::Display> fmt::Display for TyKind<T> {
 			Self::Float => write!(f, "float"),
 
 			Self::Str => write!(f, "str"),
-			// TODO: expand args in display
-			Self::Fn(_) => write!(f, "a function"),
-
-			Self::Infer(_, infer) => infer.fmt(f),
-
-			// TODO
-			Self::Error => bug!("error ty kind should never be shown to end-user"),
 		}
 	}
 }
@@ -489,14 +517,10 @@ impl TyKind<NoInfer> {
 	#[must_use]
 	pub fn as_infer(self) -> TyKind<Infer> {
 		match self {
-			Self::Void => TyKind::Void,
-			Self::Never => TyKind::Never,
-			Self::Bool => TyKind::Bool,
-			Self::UnsignedInt => TyKind::UnsignedInt,
-			Self::SignedInt => TyKind::SignedInt,
-			Self::Float => TyKind::Float,
-			Self::Str => TyKind::Str,
+			Self::Primitive(kind) => TyKind::Primitive(kind),
+			Self::Pointer(ty) => TyKind::Pointer(Box::new(ty.as_infer())),
 			Self::Fn(fn_) => TyKind::Fn(fn_),
+			Self::Adt(()) => TyKind::Adt(()),
 			Self::Error => TyKind::Error,
 		}
 	}
@@ -505,14 +529,10 @@ impl TyKind<NoInfer> {
 impl TyKind<Infer> {
 	pub fn as_no_infer(self) -> Result<TyKind<NoInfer>, (InferTag, Infer)> {
 		match self {
-			Self::Void => Ok(TyKind::Void),
-			Self::Never => Ok(TyKind::Never),
-			Self::Bool => Ok(TyKind::Bool),
-			Self::UnsignedInt => Ok(TyKind::UnsignedInt),
-			Self::SignedInt => Ok(TyKind::SignedInt),
-			Self::Float => Ok(TyKind::Float),
-			Self::Str => Ok(TyKind::Str),
+			Self::Primitive(kind) => Ok(TyKind::Primitive(kind)),
+			Self::Pointer(kind) => Ok(TyKind::Pointer(Box::new(kind.as_no_infer()?))),
 			Self::Fn(fn_) => Ok(TyKind::Fn(fn_)),
+			Self::Adt(()) => Ok(TyKind::Adt(())),
 			Self::Infer(tag, infer) => Err((tag, infer)),
 			Self::Error => Ok(TyKind::Error),
 		}
@@ -532,7 +552,11 @@ impl TbirBuilder<'_> {
 	}
 	fn build_block(&self, block: &hir::Block) -> tbir::Block {
 		let ret = block.ret.map(|expr| self.build_expr(expr));
-		let ty = ret.as_ref().map_or(TyKind::Void, |expr| expr.ty.clone());
+		let ty = ret
+			.as_ref()
+			.map_or(TyKind::Primitive(PrimitiveKind::Void), |expr| {
+				expr.ty.clone()
+			});
 
 		tbir::Block {
 			stmts: block

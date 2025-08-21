@@ -170,10 +170,16 @@ impl Parser<'_> {
 
 			Open(Paren) => self.parse_paren_expr()?,
 			TokenKind::Ident(_) => self.parse_identifier_expr()?,
-			Literal(Integer, symbol) => {
+			Literal(kind, symbol) => {
 				self.bump();
+				let kind = match kind {
+					Integer => ExprKind::Literal(Integer, symbol),
+					Float => ExprKind::Literal(Float, symbol),
+					// handle prefixed strings (e.g. c"content")
+					Str => ExprKind::Literal(Str, symbol),
+				};
 				Expr {
-					kind: ExprKind::Literal(Integer, symbol),
+					kind,
 					span: self.last_token.span,
 					id: self.make_node_id(),
 				}
@@ -386,9 +392,9 @@ impl Parser<'_> {
 impl Parser<'_> {
 	fn parse_ty(&mut self) -> PResult<Ty> {
 		tracing::trace!(cur = ?self.token.kind, "parse_ty");
-		#[expect(clippy::single_match_else, reason = "more type forms to come?")]
 		match self.token.kind {
 			Ident(_) => self.parse_ty_path(),
+			BinOp(Mul) => self.parse_ty_pointer(),
 			_ => {
 				let report = errors::parser::expected_construct_no_match("a type", self.token.span);
 				Err(Diagnostic::new(report))
@@ -416,6 +422,19 @@ impl Parser<'_> {
 
 		Ok(Ty {
 			kind: TyKind::Path(path, generics),
+			span: lo.to(self.last_token.span),
+		})
+	}
+
+	fn parse_ty_pointer(&mut self) -> PResult<Ty> {
+		let lo = self.token.span;
+		// TODO: expect star for diagnostics
+		self.expect(BinOp(Mul))?;
+
+		let ty = Box::new(self.parse_ty()?);
+
+		Ok(Ty {
+			kind: TyKind::Pointer(ty),
 			span: lo.to(self.last_token.span),
 		})
 	}

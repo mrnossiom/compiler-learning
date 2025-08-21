@@ -111,6 +111,8 @@ pub struct Ty {
 pub enum TyKind {
 	Path(Vec<Ident>, Option<Vec<Ty>>),
 
+	Pointer(Box<Ty>),
+
 	Unit,
 
 	/// Corresponds to the explicit `_` token

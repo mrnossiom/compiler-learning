@@ -2,6 +2,7 @@
 
 pub mod codegen;
 pub mod driver;
+pub mod errors;
 pub mod lexer;
 pub mod lowerer;
 pub mod parser;

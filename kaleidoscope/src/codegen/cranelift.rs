@@ -7,10 +7,9 @@ use cranelift_module::{FuncId, Linkage, Module};
 use cranelift_object::{ObjectModule, ObjectProduct};
 
 use crate::{
-	Result, ast,
+	Result, ast, bug,
 	codegen::{CodeGenBackend, JitBackend, ObjectBackend},
 	hir, lexer,
-	resolve::Environment,
 	session::{PrintKind, SessionCtx, Symbol},
 	tbir,
 	ty::{self, TyCtx},
@@ -57,15 +56,18 @@ impl<'tcx, M: Module> Generator<'tcx, M> {
 	}
 
 	// Return `None` on non-concrete types (e.g. zst, never)
+	// TODO: remove duplicate on function generator
 	fn to_cl_type(&self, output: &ty::TyKind) -> Option<Type> {
-		match &output {
-			ty::TyKind::Unit | ty::TyKind::Never => None,
+		match output.clone() {
+			ty::TyKind::Void | ty::TyKind::Never => None,
 			ty::TyKind::Bool => Some(types::I8),
-			ty::TyKind::Integer => Some(types::I32),
+			ty::TyKind::UnsignedInt | ty::TyKind::SignedInt => Some(types::I32),
 			ty::TyKind::Float => Some(types::F32),
 			ty::TyKind::Str => todo!(),
 			ty::TyKind::Fn(_fn_decl) => Some(self.isa.pointer_type()),
-			ty::TyKind::Infer(_, _) => unreachable!(),
+			ty::TyKind::Error => {
+				bug!("error type kind is a placeholder and should not reach codegen")
+			}
 		}
 	}
 }
@@ -236,8 +238,8 @@ impl<M: Module> Generator<'_, M> {
 }
 
 impl<M: Module> CodeGenBackend for Generator<'_, M> {
-	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment) {
-		let mut id_map = HashMap::new();
+	fn codegen_root(&mut self, hir: &hir::Root) {
+		let mut function_ids = HashMap::new();
 
 		for item in hir.items {
 			match item.kind {
@@ -251,7 +253,7 @@ impl<M: Module> CodeGenBackend for Generator<'_, M> {
 					let decl = self.tcx.lower_fn_decl(decl);
 					let func_id = self.declare_function(ident.name, &decl).unwrap();
 
-					id_map.insert(ident.name, func_id);
+					function_ids.insert(ident.name, func_id);
 				}
 			}
 		}
@@ -262,11 +264,11 @@ impl<M: Module> CodeGenBackend for Generator<'_, M> {
 					// TODO: do this elsewhere
 					let decl = self.tcx.lower_fn_decl(decl);
 
-					let body = self.tcx.typeck_fn(ident, &decl, body, env);
+					let body = self.tcx.typeck_fn(ident, &decl, body);
 					if self.scx.options.print.contains(&PrintKind::TypedBodyIr) {
 						println!("{body:#?}");
 					}
-					let func_id = id_map.get(&ident.name).unwrap();
+					let func_id = function_ids.get(&ident.name).unwrap();
 					self.define_function(*func_id, &decl, &body).unwrap();
 				}
 			}
@@ -311,14 +313,16 @@ pub struct FunctionGenerator<'scx, 'bld> {
 impl FunctionGenerator<'_, '_> {
 	// TODO: remove duplicate
 	fn to_cl_type(&self, output: &ty::TyKind) -> Option<Type> {
-		match &output {
-			ty::TyKind::Unit | ty::TyKind::Never => None,
+		match output.clone() {
+			ty::TyKind::Void | ty::TyKind::Never => None,
 			ty::TyKind::Bool => Some(types::I8),
-			ty::TyKind::Integer => Some(types::I32),
+			ty::TyKind::UnsignedInt | ty::TyKind::SignedInt => Some(types::I32),
 			ty::TyKind::Float => Some(types::F32),
-			ty::TyKind::Str => todo!(),
+			ty::TyKind::Str => todo!("str type is not implemented"),
 			ty::TyKind::Fn(_fn_decl) => Some(self.isa.pointer_type()),
-			ty::TyKind::Infer(_, _) => unreachable!(),
+			ty::TyKind::Error => {
+				bug!("error type kind is a placeholder and should not reach codegen")
+			}
 		}
 	}
 

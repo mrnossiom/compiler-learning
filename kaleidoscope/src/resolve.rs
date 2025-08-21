@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, mem};
 
 use crate::{hir, session::Symbol, ty};
 
@@ -19,7 +19,7 @@ pub struct Environment {
 pub struct Collector<'tcx> {
 	tcx: &'tcx ty::TyCtx<'tcx>,
 
-	pub environment: Environment,
+	environment: Environment,
 }
 
 impl<'tcx> Collector<'tcx> {
@@ -38,6 +38,10 @@ impl Collector<'_> {
 		for item in hir.items {
 			self.collect_item(item);
 		}
+
+		self.tcx
+			.environment
+			.replace(Some(mem::take(&mut self.environment)));
 	}
 
 	fn collect_item(&mut self, item: &hir::Item<'_>) {

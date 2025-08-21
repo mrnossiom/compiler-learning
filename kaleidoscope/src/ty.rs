@@ -1,21 +1,22 @@
 use std::{
+	cell::RefCell,
 	collections::HashMap,
 	sync::atomic::{AtomicU32, Ordering},
 };
 
-use ariadne::{Label, ReportKind};
-
 use crate::{
 	ast::{self, Ident},
-	hir, lexer,
+	errors, hir, lexer,
 	resolve::Environment,
-	session::{Report, SessionCtx, Span, Symbol},
+	session::{SessionCtx, Span, Symbol},
 	tbir,
 };
 
 #[derive(Debug)]
 pub struct TyCtx<'scx> {
 	pub scx: &'scx SessionCtx,
+
+	pub environment: RefCell<Option<Environment>>,
 
 	infer_tag_count: AtomicU32,
 }
@@ -25,6 +26,7 @@ impl<'scx> TyCtx<'scx> {
 	pub fn new(scx: &'scx SessionCtx) -> Self {
 		Self {
 			scx,
+			environment: RefCell::default(),
 			infer_tag_count: AtomicU32::default(),
 		}
 	}
@@ -33,14 +35,11 @@ impl<'scx> TyCtx<'scx> {
 /// Context actions
 impl TyCtx<'_> {
 	#[must_use]
-	#[tracing::instrument(level = "trace", skip(self, decl, body, env))]
-	pub fn typeck_fn(
-		&self,
-		name: Ident,
-		decl: &FnDecl,
-		body: &hir::Block<'_>,
-		env: &Environment,
-	) -> tbir::Block {
+	#[tracing::instrument(level = "trace", skip(self, decl, body,))]
+	pub fn typeck_fn(&self, name: Ident, decl: &FnDecl, body: &hir::Block<'_>) -> tbir::Block {
+		let env = self.environment.borrow_mut().take().unwrap();
+		// defer put back
+
 		let mut inferer = Inferer::new(self, decl, body, &env.values);
 		inferer.infer_fn();
 
@@ -51,15 +50,21 @@ impl TyCtx<'_> {
 				Ok(ty) => {
 					expr_tys.insert(node_id, ty);
 				}
-				Err((mut tag, _infer)) => loop {
+				Err((mut tag, infer)) => loop {
 					let Some(ty) = inferer.infer_map.get(&tag) else {
-						let report =
-							Report::build(ReportKind::Error, span)
-								.with_label(Label::new(span).with_message(
-									"expression is unconstrainted, thus has no type",
-								));
-
-						self.scx.dcx().emit_build(report);
+						// set default types for expression that can be inferred via literals
+						match infer {
+							Infer::Integer => {
+								expr_tys.insert(node_id, TyKind::SignedInt);
+							}
+							Infer::Float => {
+								expr_tys.insert(node_id, TyKind::Float);
+							}
+							Infer::Generic | Infer::Explicit => {
+								let report = errors::ty::report_unconstrained(span);
+								self.scx.dcx().emit_build(report);
+							}
+						}
 						break;
 					};
 					match ty.clone().as_no_infer() {
@@ -77,7 +82,12 @@ impl TyCtx<'_> {
 			body: inferer.body,
 			expr_tys,
 		};
-		tbir_builder.build_body()
+		let body = tbir_builder.build_body();
+
+		// put back
+		self.environment.borrow_mut().replace(env);
+
+		body
 	}
 }
 
@@ -89,7 +99,7 @@ impl TyCtx<'_> {
 	fn lower_ty(&self, ty: &ast::Ty) -> TyKind<Infer> {
 		match &ty.kind {
 			ast::TyKind::Path(path, _generics) => self.lower_path_ty(path[0]),
-			ast::TyKind::Unit => TyKind::Unit,
+			ast::TyKind::Unit => TyKind::Void,
 			ast::TyKind::Infer => TyKind::Infer(self.next_infer_tag(), Infer::Explicit),
 		}
 	}
@@ -100,26 +110,44 @@ impl TyCtx<'_> {
 		let inputs = decl
 			.inputs
 			.iter()
-			.map(|(ident, ty)| Param {
-				ident: *ident,
-				ty: self.lower_ty(ty).as_no_infer().unwrap(),
+			.map(|(ident, ty)| {
+				let ty = if let Ok(ty) = self.lower_ty(ty).as_no_infer() {
+					ty
+				} else {
+					let report = errors::ty::function_cannot_infer_signature(ident.span);
+					self.scx.dcx().emit_build(report);
+					TyKind::Error
+				};
+				Param { ident: *ident, ty }
 			})
 			.collect();
-		FnDecl {
-			inputs,
-			output: self.lower_ty(decl.output).as_no_infer().unwrap(),
-		}
+
+		let ty = if let Ok(ty) = self.lower_ty(decl.output).as_no_infer() {
+			ty
+		} else {
+			let report = errors::ty::function_cannot_infer_signature(decl.output.span);
+			self.scx.dcx().emit_build(report);
+			TyKind::Error
+		};
+		FnDecl { inputs, output: ty }
 	}
 
 	fn lower_path_ty(&self, path: ast::Ident) -> TyKind<Infer> {
 		match self.scx.symbols.resolve(path.name).as_str() {
-			"number" => TyKind::Integer,
+			"_" => TyKind::Infer(self.next_infer_tag(), Infer::Explicit),
+
+			"void" => TyKind::Void,
+
+			"uint" => TyKind::UnsignedInt,
+			"sint" => TyKind::SignedInt,
+
 			"str" => TyKind::Str,
 
-			// TODO: remove
-			"uint" => TyKind::Integer,
-
-			_ => panic!("ty undefined {path:?}"),
+			_ => {
+				let report = errors::ty::type_unknown(path.span);
+				self.scx.dcx().emit_build(report);
+				TyKind::Error
+			}
 		}
 	}
 }
@@ -186,7 +214,7 @@ impl Inferer<'_> {
 			self.infer_stmt(stmt);
 		}
 
-		let expected_ret_ty = block.ret.map_or(TyKind::Unit, |expr| self.infer_expr(expr));
+		let expected_ret_ty = block.ret.map_or(TyKind::Void, |expr| self.infer_expr(expr));
 
 		#[expect(clippy::let_and_return)]
 		expected_ret_ty
@@ -205,19 +233,14 @@ impl Inferer<'_> {
 				self.local_env.entry(ident.name).or_default().push(expr_ty);
 			}
 			hir::StmtKind::Assign { target, value } => {
-				let target_ty = self
-					.local_env
-					.get(&target.name)
-					.unwrap()
-					.last()
-					.unwrap()
-					.clone();
+				let ty_kinds = self.local_env.get(&target.name).unwrap();
+				let target_ty = ty_kinds.last().unwrap().clone();
 				let expr_ty = self.infer_expr(value);
 				self.unify(&target_ty, &expr_ty);
 			}
 			hir::StmtKind::Loop { block } => {
 				let block_ty = self.infer_block(block);
-				self.unify(&TyKind::Unit, &block_ty);
+				self.unify(&TyKind::Void, &block_ty);
 			}
 		}
 	}
@@ -242,14 +265,14 @@ impl Inferer<'_> {
 				let right = self.infer_expr(right);
 
 				// TODO: allow with bools
-				self.unify(&TyKind::Integer, &left);
-				self.unify(&TyKind::Integer, &right);
+				self.unify(&TyKind::UnsignedInt, &left);
+				self.unify(&TyKind::UnsignedInt, &right);
 
 				#[allow(clippy::enum_glob_use)]
 				let expected = {
 					use lexer::BinOp::*;
 					match op.bit {
-						Plus | Minus | Mul | Div | Mod => TyKind::Integer,
+						Plus | Minus | Mul | Div | Mod => TyKind::UnsignedInt,
 						Gt | Ge | Lt | Le | EqEq | Ne => TyKind::Bool,
 					}
 				};
@@ -286,7 +309,7 @@ impl Inferer<'_> {
 				// if no `else` part, then it must return Unit
 				let altern_ty = altern
 					.map(|altern| self.infer_block(altern))
-					.unwrap_or(TyKind::Unit);
+					.unwrap_or(TyKind::Void);
 
 				self.unify(&conseq_ty, &altern_ty)
 			}
@@ -326,7 +349,7 @@ impl Inferer<'_> {
 	fn unify_infer(&mut self, tag: InferTag, infer: Infer, other: &TyKind<Infer>) -> TyKind<Infer> {
 		tracing::trace!(?tag, ?infer, ?other, "unify_infer");
 		let unified = match (infer, other) {
-			(Infer::Integer, TyKind::Integer) => TyKind::Integer,
+			(Infer::Integer, TyKind::UnsignedInt) => TyKind::UnsignedInt,
 			(Infer::Float, TyKind::Float) => TyKind::Float,
 			(Infer::Generic | Infer::Explicit, ty) => ty.clone(),
 
@@ -364,17 +387,21 @@ pub struct FnDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TyKind<InferKind = NoInfer> {
-	Unit,
+	Void,
 	Never,
 
 	Bool,
-	Integer,
+	UnsignedInt,
+	SignedInt,
 	Float,
+
 	Str,
 
 	Fn(Box<FnDecl>),
 
 	Infer(InferTag, InferKind),
+
+	Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -396,29 +423,32 @@ impl TyKind<NoInfer> {
 	#[must_use]
 	pub fn as_infer(self) -> TyKind<Infer> {
 		match self {
-			Self::Unit => TyKind::Unit,
+			Self::Void => TyKind::Void,
 			Self::Never => TyKind::Never,
 			Self::Bool => TyKind::Bool,
-			Self::Integer => TyKind::Integer,
+			Self::UnsignedInt => TyKind::UnsignedInt,
+			Self::SignedInt => TyKind::SignedInt,
 			Self::Float => TyKind::Float,
 			Self::Str => TyKind::Str,
 			Self::Fn(fn_) => TyKind::Fn(fn_),
+			Self::Error => TyKind::Error,
 		}
 	}
 }
 
 impl TyKind<Infer> {
-	#[must_use]
 	pub fn as_no_infer(self) -> Result<TyKind<NoInfer>, (InferTag, Infer)> {
 		match self {
-			Self::Unit => Ok(TyKind::Unit),
+			Self::Void => Ok(TyKind::Void),
 			Self::Never => Ok(TyKind::Never),
 			Self::Bool => Ok(TyKind::Bool),
-			Self::Integer => Ok(TyKind::Integer),
+			Self::UnsignedInt => Ok(TyKind::UnsignedInt),
+			Self::SignedInt => Ok(TyKind::SignedInt),
 			Self::Float => Ok(TyKind::Float),
 			Self::Str => Ok(TyKind::Str),
 			Self::Fn(fn_) => Ok(TyKind::Fn(fn_)),
 			Self::Infer(tag, infer) => Err((tag, infer)),
+			Self::Error => Ok(TyKind::Error),
 		}
 	}
 }
@@ -436,7 +466,7 @@ impl TbirBuilder<'_> {
 	}
 	fn build_block(&self, block: &hir::Block) -> tbir::Block {
 		let ret = block.ret.map(|expr| self.build_expr(expr));
-		let ty = ret.as_ref().map_or(TyKind::Unit, |expr| expr.ty.clone());
+		let ty = ret.as_ref().map_or(TyKind::Void, |expr| expr.ty.clone());
 
 		tbir::Block {
 			stmts: block

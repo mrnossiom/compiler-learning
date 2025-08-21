@@ -11,7 +11,7 @@ use crate::{
 		Block, Expr, ExprKind, FnDecl, Ident, Item, ItemKind, NodeId, Root, Spanned, Stmt,
 		StmtKind, Ty, TyKind,
 	},
-	bug,
+	bug, errors,
 	lexer::{Delimiter, Lexer, Token, TokenKind},
 	session::{Diagnostic, SessionCtx, SourceFile},
 };
@@ -19,7 +19,7 @@ use crate::{
 pub type PResult<T> = Result<T, Diagnostic>;
 
 pub struct Parser<'scx> {
-	_scx: &'scx SessionCtx,
+	scx: &'scx SessionCtx,
 
 	lexer: Lexer<'scx, 'scx>,
 
@@ -32,7 +32,7 @@ pub struct Parser<'scx> {
 impl<'scx> Parser<'scx> {
 	pub fn new(scx: &'scx SessionCtx, file: &'scx SourceFile) -> Self {
 		let mut parser = Self {
-			_scx: scx,
+			scx,
 
 			lexer: Lexer::new(scx, &file.content, file.offset),
 
@@ -70,16 +70,12 @@ impl Parser<'_> {
 	}
 
 	#[track_caller]
-	fn expect(&mut self, token_kind: TokenKind) -> PResult<Token> {
-		if self.check(token_kind) {
+	fn expect(&mut self, expected_kind: TokenKind) -> PResult<Token> {
+		if self.check(expected_kind) {
 			self.bump();
 			Ok(self.token)
 		} else {
-			let report = Report::build(ReportKind::Error, self.token.span)
-				.with_message(format!("expected {token_kind}"))
-				.with_label(
-					Label::new(self.token.span).with_message(format!("got {}", self.token.kind)),
-				);
+			let report = errors::parser::expected_token_kind(expected_kind, self.token);
 			Err(Diagnostic::new(report))
 		}
 	}
@@ -92,11 +88,9 @@ impl Parser<'_> {
 
 	fn expect_ident(&mut self) -> PResult<Ident> {
 		self.eat_ident().ok_or_else(|| {
-			let report = Report::build(ReportKind::Error, self.token.span)
-				.with_message("expected an ident".to_string())
-				.with_label(
-					Label::new(self.token.span).with_message(format!("got {:?}", self.token)),
-				);
+			let placeholder = self.scx.symbols.intern("_");
+			let report =
+				errors::parser::expected_token_kind(TokenKind::Ident(placeholder), self.token);
 			Diagnostic::new(report)
 		})
 	}
@@ -192,12 +186,8 @@ impl Parser<'_> {
 			Keyword(Continue) => self.parse_continue()?,
 
 			_ => {
-				let report = Report::build(ReportKind::Error, self.token.span)
-					.with_message("expected an expression".to_string())
-					.with_label(
-						Label::new(self.token.span)
-							.with_message("got an unexpected token".to_string()),
-					);
+				let report =
+					errors::parser::expected_construct_no_match("an expression", self.token.span);
 				return Err(Diagnostic::new(report));
 			}
 		};
@@ -316,14 +306,10 @@ impl Parser<'_> {
 		let kind = match self.token.kind {
 			Keyword(Fn) => self.parse_fn()?,
 			Keyword(Extern) => self.parse_extern_fn()?,
-			Eof => {
-				let report = Report::build(ReportKind::Error, self.token.span)
-					.with_message("no expression entered");
-				return Err(Diagnostic::new(report));
-			}
+
 			_ => {
-				let report = Report::build(ReportKind::Error, self.token.span)
-					.with_message("could not parse item");
+				let report =
+					errors::parser::expected_construct_no_match("an item", self.token.span);
 				return Err(Diagnostic::new(report));
 			}
 		};
@@ -403,12 +389,7 @@ impl Parser<'_> {
 		match self.token.kind {
 			Ident(_) => self.parse_ty_path(),
 			_ => {
-				let report = Report::build(ReportKind::Error, self.token.span)
-					.with_message("expected a type")
-					.with_label(
-						Label::new(self.token.span)
-							.with_message(format!("but found {}", self.token.kind)),
-					);
+				let report = errors::parser::expected_construct_no_match("a type", self.token.span);
 				Err(Diagnostic::new(report))
 			}
 		}

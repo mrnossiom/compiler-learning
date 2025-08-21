@@ -1,11 +1,7 @@
-fn putchard(c: uint);
+extern fn putchar(chr: uint);
 
-fn hello_world() { }
-
-fn main() uint {
-	a = 0;
-	
-	hello_world();
-
-	0
+fn main() void {
+	a := 48;
+	a = a + 1;
+	putchar(a);
 }

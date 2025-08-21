@@ -91,7 +91,7 @@ impl fmt::Display for TokenKind {
 			Keyword(_) => write!(f, "a keyword"),
 			Literal(kind, _) => write!(f, "a {kind} literal"),
 
-			BinOp(_) => write!(f, "a binary operator"),
+			BinOp(kind) => write!(f, "{kind}"),
 
 			Open(kind) => write!(f, "an opening {kind}"),
 			Close(kind) => write!(f, "a closing {kind}"),
@@ -193,6 +193,27 @@ pub enum BinOp {
 	EqEq,
 	/// `!=`
 	Ne,
+}
+
+impl fmt::Display for BinOp {
+	/// Should fit in the sentence "found {}"
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Plus => write!(f, "a plus operator"),
+			Minus => write!(f, "a minus operator"),
+			Mul => write!(f, "a multiplication operator"),
+			Div => write!(f, "a division operator"),
+			Mod => write!(f, "a modulo operator"),
+
+			Gt => write!(f, "a greater than comparator"),
+			Ge => write!(f, "a greater or equal comparator"),
+			Lt => write!(f, "a lesser than comparator"),
+			Le => write!(f, "a lesser or equal comparator"),
+
+			EqEq => write!(f, "a equal comparator"),
+			Ne => write!(f, "a different comparator"),
+		}
+	}
 }
 
 impl BinOp {

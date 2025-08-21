@@ -1,3 +1,5 @@
+use std::ops::Not;
+
 use ariadne::ReportKind;
 
 use crate::{
@@ -12,6 +14,17 @@ pub fn pipeline(scx: &SessionCtx) {
 		let report = Report::build(ReportKind::Error, Span::DUMMY)
 			.with_message("expected an input filename");
 		scx.dcx().emit_fatal(&Diagnostic::new(report))
+	});
+
+	let output = scx.options.jit.not().then(|| {
+		scx.options.output.as_ref().unwrap_or_else(|| {
+			let report = Report::build(ReportKind::Error, Span::DUMMY).with_message(
+				"expected an output filename
+help: specify the `--output` flag
+help: you can also use the `--jit` flag to run main directly",
+			);
+			scx.dcx().emit_fatal(&Diagnostic::new(report))
+		})
 	});
 
 	let source = scx
@@ -31,7 +44,7 @@ pub fn pipeline(scx: &SessionCtx) {
 	}
 
 	// lowering to HIR
-	let lcx = lowerer::LowerCtx::new();
+	let lcx = lowerer::LowerCtx::new(scx);
 	let hir = lcx.lower_root(&ast);
 	if scx.options.print.contains(&PrintKind::HigherIr) {
 		println!("{hir:#?}");
@@ -53,7 +66,7 @@ pub fn pipeline(scx: &SessionCtx) {
 			Backend::Llvm => &mut codegen::LlvmBackend::new_jit(&tcx),
 		};
 
-		backend.codegen_root(&hir, &cltr.environment);
+		backend.codegen_root(&hir);
 		backend.call_main();
 	} else {
 		let mut backend = match scx.options.backend {
@@ -63,15 +76,11 @@ pub fn pipeline(scx: &SessionCtx) {
 			Backend::Llvm => todo!("no object backend for llvm"),
 		};
 
-		backend.codegen_root(&hir, &cltr.environment);
+		backend.codegen_root(&hir);
 
 		let object = backend.get_object();
 		let bytes = object.emit().unwrap();
-		std::fs::write(
-			scx.options.output.as_ref().expect("no output filename"),
-			bytes,
-		)
-		.unwrap();
+		std::fs::write(output.unwrap(), bytes).unwrap();
 	}
 
 	tracing::info!("Reached pipeline end successfully!");

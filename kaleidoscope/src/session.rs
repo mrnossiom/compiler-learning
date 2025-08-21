@@ -158,7 +158,7 @@ impl SymbolInterner {
 #[derive(Debug)]
 pub struct SessionCtx {
 	pub options: Options,
-	pub diag_cx: DiagnosticCtx,
+	diag_cx: DiagnosticCtx,
 
 	pub symbols: SymbolInterner,
 	pub source_map: Rc<RwLock<SourceMap>>,
@@ -327,7 +327,11 @@ impl SourceMap {
 		let file_idx = self
 			.sources
 			.binary_search_by_key(&pos.to_u32(), |f| f.offset.to_u32())
-			.unwrap_or_else(|p| p - 1);
+			.unwrap_or_else(|p| {
+				p.checked_sub(1).unwrap_or_else(|| {
+					bug!("bytepos are handed only if there is at least a source in the file")
+				})
+			});
 		FileIdx::new(file_idx)
 	}
 

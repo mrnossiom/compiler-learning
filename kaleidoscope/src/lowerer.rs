@@ -6,23 +6,30 @@ use bumpalo::Bump;
 
 use crate::{
 	ast::{self, Spanned},
+	errors,
 	hir::{Block, Expr, ExprKind, FnDecl, Item, ItemKind, NodeId, Root, Stmt, StmtKind},
 	lexer,
+	session::SessionCtx,
 };
 
-#[derive(Debug, Default)]
-pub struct LowerCtx {
+#[derive(Debug)]
+pub struct LowerCtx<'scx> {
+	pub scx: &'scx SessionCtx,
+
 	pub arena: Bump,
 }
 
-impl LowerCtx {
+impl<'scx> LowerCtx<'scx> {
 	#[must_use]
-	pub fn new() -> Self {
-		Self::default()
+	pub fn new(scx: &'scx SessionCtx) -> Self {
+		Self {
+			scx,
+			arena: Bump::default(),
+		}
 	}
 }
 
-impl LowerCtx {
+impl LowerCtx<'_> {
 	pub fn lower_root<'a>(&'a self, ast: &'a ast::Root) -> Root<'a> {
 		tracing::trace!("lower_root");
 		let lowerer = Lowerer::new(self);
@@ -32,15 +39,15 @@ impl LowerCtx {
 
 #[derive(Debug)]
 pub struct Lowerer<'lcx> {
-	tcx: &'lcx LowerCtx,
+	lcx: &'lcx LowerCtx<'lcx>,
 
 	next_node_id: AtomicU32,
 }
 
 impl<'lcx> Lowerer<'lcx> {
-	pub const fn new(tcx: &'lcx LowerCtx) -> Self {
+	pub const fn new(lcx: &'lcx LowerCtx) -> Self {
 		Self {
-			tcx,
+			lcx,
 			next_node_id: AtomicU32::new(0),
 		}
 	}
@@ -59,7 +66,7 @@ impl<'lcx> Lowerer<'lcx> {
 	}
 
 	fn alloc<T>(&self, t: T) -> &'lcx T {
-		self.tcx.arena.alloc(t)
+		self.lcx.arena.alloc(t)
 	}
 
 	fn alloc_iter<T, I>(&self, i: I) -> &'lcx [T]
@@ -67,7 +74,7 @@ impl<'lcx> Lowerer<'lcx> {
 		I: IntoIterator<Item = T>,
 		I::IntoIter: ExactSizeIterator,
 	{
-		self.tcx.arena.alloc_slice_fill_iter(i)
+		self.lcx.arena.alloc_slice_fill_iter(i)
 	}
 }
 
@@ -128,7 +135,7 @@ impl<'lcx> Lowerer<'lcx> {
 				},
 				// desugar to simple loop
 				ast::StmtKind::WhileLoop { check, body } => self.lower_while_loop(check, body),
-				ast::StmtKind::ForLoop { .. } => todo!("for loop"),
+				ast::StmtKind::ForLoop { .. } => todo!("for loop is not parsed"),
 
 				ast::StmtKind::Let { ident, ty, value } => StmtKind::Let {
 					ident: *ident,
@@ -153,13 +160,18 @@ impl<'lcx> Lowerer<'lcx> {
 
 				ast::StmtKind::ExprRet(expr) => {
 					let expr = self.alloc(self.lower_expr(expr));
+
+					// correct case
 					if tail.is_empty() {
 						ret = Some(expr);
 						break;
-					} else {
-						// accept expr to recover but send error diag
-						todo!("accept otherwise? or error?, {stmt:?} and {tail:?}")
 					}
+
+					let report = errors::lowerer::no_semicolon_mid_block(expr.span);
+					self.lcx.scx.dcx().emit_build(report);
+
+					// recover like there was a semicolon
+					StmtKind::Expr(expr)
 				}
 
 				ast::StmtKind::Empty => continue,

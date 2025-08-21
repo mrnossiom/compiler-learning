@@ -1,5 +1,3 @@
-use crate::{hir, resolve::Environment};
-
 #[cfg(feature = "cranelift")]
 mod cranelift;
 #[cfg(feature = "llvm")]
@@ -28,7 +26,7 @@ impl Default for Backend {
 }
 
 pub trait CodeGenBackend {
-	fn codegen_root(&mut self, hir: &hir::Root, env: &Environment);
+	fn codegen_root(&mut self, hir: &crate::hir::Root);
 }
 
 pub trait JitBackend: CodeGenBackend {

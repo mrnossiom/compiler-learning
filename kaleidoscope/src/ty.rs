@@ -1,12 +1,13 @@
 use std::{
 	cell::RefCell,
 	collections::HashMap,
+	fmt,
 	sync::atomic::{AtomicU32, Ordering},
 };
 
 use crate::{
 	ast::{self, Ident},
-	errors, hir, lexer,
+	bug, errors, hir, lexer,
 	resolve::Environment,
 	session::{SessionCtx, Span, Symbol},
 	tbir,
@@ -137,9 +138,12 @@ impl TyCtx<'_> {
 			"_" => TyKind::Infer(self.next_infer_tag(), Infer::Explicit),
 
 			"void" => TyKind::Void,
+			"never" => TyKind::Never,
 
+			"bool" => TyKind::Bool,
 			"uint" => TyKind::UnsignedInt,
 			"sint" => TyKind::SignedInt,
+			"float" => TyKind::Float,
 
 			"str" => TyKind::Str,
 
@@ -185,6 +189,20 @@ impl<'tcx> Inferer<'tcx> {
 			expr_type: HashMap::default(),
 
 			infer_map: HashMap::default(),
+		}
+	}
+
+	fn resolve_var_ty(&self, var: &Ident) -> TyKind<Infer> {
+		if let Some(ty) = self
+			.local_env
+			.get(&var.name)
+			.and_then(|ty_kinds| ty_kinds.last())
+		{
+			ty.clone()
+		} else {
+			let report = errors::ty::variable_not_in_scope(var.span);
+			self.tcx.scx.dcx().emit_build(report);
+			TyKind::Error
 		}
 	}
 }
@@ -233,10 +251,9 @@ impl Inferer<'_> {
 				self.local_env.entry(ident.name).or_default().push(expr_ty);
 			}
 			hir::StmtKind::Assign { target, value } => {
-				let ty_kinds = self.local_env.get(&target.name).unwrap();
-				let target_ty = ty_kinds.last().unwrap().clone();
-				let expr_ty = self.infer_expr(value);
-				self.unify(&target_ty, &expr_ty);
+				let target_ty = self.resolve_var_ty(target);
+				let value_ty = self.infer_expr(value);
+				self.unify(&target_ty, &value_ty);
 			}
 			hir::StmtKind::Loop { block } => {
 				let block_ty = self.infer_block(block);
@@ -247,12 +264,7 @@ impl Inferer<'_> {
 
 	fn infer_expr<'lcx>(&mut self, expr: &'lcx hir::Expr<'lcx>) -> TyKind<Infer> {
 		let ty = match &expr.kind {
-			hir::ExprKind::Variable(ident) => self
-				.local_env
-				.get(&ident.name)
-				.and_then(|v| v.last())
-				.cloned()
-				.unwrap_or_else(|| panic!("unknown variable {:?}", ident.name)),
+			hir::ExprKind::Variable(ident) => self.resolve_var_ty(ident),
 			hir::ExprKind::Literal(lit, _ident) => match lit {
 				lexer::LiteralKind::Integer => {
 					TyKind::Infer(self.tcx.next_infer_tag(), Infer::Integer)
@@ -282,20 +294,29 @@ impl Inferer<'_> {
 			hir::ExprKind::FnCall { expr, args } => {
 				let expr_ty = self.infer_expr(expr);
 
-				let TyKind::Fn(fn_) = expr_ty else {
-					todo!("you can only call functions");
+				let TyKind::Fn(func) = expr_ty else {
+					let report =
+						errors::ty::tried_to_call_non_function(expr.span, args.span, &expr_ty);
+					self.tcx.scx.dcx().emit_build(report);
+					return TyKind::Error;
 				};
 
-				if fn_.inputs.len() != args.len() {
-					todo!("args count mismatch");
+				if func.inputs.len() != args.bit.len() {
+					let report = errors::ty::function_nb_args_mismatch(
+						args.span,
+						func.inputs.len(),
+						args.bit.len(),
+					);
+					self.tcx.scx.dcx().emit_build(report);
 				}
 
-				for (Param { ty: expected, .. }, actual) in fn_.inputs.iter().zip(args.iter()) {
+				for (Param { ty: expected, .. }, actual) in func.inputs.iter().zip(args.bit.iter())
+				{
 					let actual_ty = self.infer_expr(actual);
 					self.unify(&expected.clone().as_infer(), &actual_ty);
 				}
 
-				fn_.output.as_infer()
+				func.output.as_infer()
 			}
 			hir::ExprKind::If {
 				cond,
@@ -331,6 +352,7 @@ impl Inferer<'_> {
 }
 
 /// Unification
+#[expect(clippy::match_same_arms)]
 impl Inferer<'_> {
 	fn unify(&mut self, expected: &TyKind<Infer>, actual: &TyKind<Infer>) -> TyKind<Infer> {
 		tracing::trace!(?expected, ?actual, "unify");
@@ -340,9 +362,16 @@ impl Inferer<'_> {
 			}
 			// infer and never have different meaning but both coerces to anything
 			(TyKind::Never, ty) | (ty, TyKind::Never) => ty.clone(),
+			// we try to recover further by inferring errors
+			(TyKind::Error, ty) | (ty, TyKind::Error) => ty.clone(),
 
 			(_, _) if expected == actual => expected.clone(),
-			(_, _) => todo!("ty mismatch `{expected:?}` vs. `{actual:?}`"),
+
+			(_, _) => {
+				let report = errors::ty::unification_mismatch(expected, actual);
+				self.tcx.scx.dcx().emit_build(report);
+				TyKind::Error
+			}
 		}
 	}
 
@@ -357,13 +386,15 @@ impl Inferer<'_> {
 				if infer == *actual_infer {
 					TyKind::Infer(*tag, *actual_infer)
 				} else {
-					panic!(
-						"infer kind mismatch: expected infer {{{infer:?}}}, received infer {{{actual_infer:?}}}"
-					)
+					let report = errors::ty::infer_unification_mismatch(infer, *actual_infer);
+					self.tcx.scx.dcx().emit_build(report);
+					TyKind::Error
 				}
 			}
 			(_, ty) => {
-				panic!("infer kind mismatch: expected infer {{{infer:?}}}, received ty {ty:?}")
+				let report = errors::ty::infer_ty_unification_mismatch(infer, ty);
+				self.tcx.scx.dcx().emit_build(report);
+				TyKind::Error
 			}
 		};
 
@@ -404,6 +435,30 @@ pub enum TyKind<InferKind = NoInfer> {
 	Error,
 }
 
+impl<T: fmt::Display> fmt::Display for TyKind<T> {
+	// Should fit in the sentence "found {}"
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Void => write!(f, "void"),
+			Self::Never => write!(f, "never"),
+
+			Self::Bool => write!(f, "bool"),
+			Self::UnsignedInt => write!(f, "uint"),
+			Self::SignedInt => write!(f, "sint"),
+			Self::Float => write!(f, "float"),
+
+			Self::Str => write!(f, "str"),
+			// TODO: expand args in display
+			Self::Fn(_) => write!(f, "a function"),
+
+			Self::Infer(_, infer) => infer.fmt(f),
+
+			// TODO
+			Self::Error => bug!("error ty kind should never be shown to end-user"),
+		}
+	}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InferTag(u32);
 
@@ -417,6 +472,17 @@ pub enum Infer {
 
 	Generic,
 	Explicit,
+}
+
+impl fmt::Display for Infer {
+	// Should fit in the sentence "found {}"
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Integer => write!(f, "{{{{integer}}}}"),
+			Self::Float => write!(f, "{{{{float}}}}"),
+			Self::Generic | Self::Explicit => write!(f, "_"),
+		}
+	}
 }
 
 impl TyKind<NoInfer> {
@@ -516,10 +582,13 @@ impl TbirBuilder<'_> {
 				Box::new(self.build_expr(left)),
 				Box::new(self.build_expr(right)),
 			),
-			hir::ExprKind::FnCall { expr, args } => tbir::ExprKind::FnCall {
-				expr: Box::new(self.build_expr(expr)),
-				args: args.iter().map(|arg| self.build_expr(arg)).collect(),
-			},
+			hir::ExprKind::FnCall { expr, args } => {
+				let nargs = args.bit.iter().map(|arg| self.build_expr(arg)).collect();
+				tbir::ExprKind::FnCall {
+					expr: Box::new(self.build_expr(expr)),
+					args: args.with_bit(nargs),
+				}
+			}
 			hir::ExprKind::If {
 				cond,
 				conseq,
@@ -539,9 +608,14 @@ impl TbirBuilder<'_> {
 			hir::ExprKind::Continue => tbir::ExprKind::Continue,
 		};
 
+		let ty = match self.expr_tys.get(&expr.id) {
+			Some(ty) => ty.clone(),
+			None => bug!("all expression should have a type by now"),
+		};
+
 		tbir::Expr {
 			kind,
-			ty: self.expr_tys.get(&expr.id).unwrap().clone(),
+			ty,
 			span: expr.span,
 			id: expr.id,
 		}

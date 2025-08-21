@@ -203,8 +203,8 @@ impl DiagnosticCtx {
 	}
 
 	#[track_caller]
-	pub fn emit_build(&self, diag_builder: ReportBuilder) {
-		self.emit(&Diagnostic::new(diag_builder));
+	pub fn emit_build(&self, report: ReportBuilder) {
+		self.emit(&Diagnostic::new(report));
 	}
 
 	pub fn emit(&self, diag: &Diagnostic) {
@@ -239,13 +239,19 @@ pub enum PrintKind {
 	BackendIr,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub enum OutputKind {
+	#[default]
+	Jit,
+	Object(PathBuf),
+}
+
 #[derive(Debug, Default)]
 pub struct Options {
 	pub input: Option<PathBuf>,
-	pub output: Option<PathBuf>,
+	pub output: OutputKind,
 
 	pub backend: Backend,
-	pub jit: bool,
 
 	// TODO: replace with an enum
 	pub print: HashSet<PrintKind>,

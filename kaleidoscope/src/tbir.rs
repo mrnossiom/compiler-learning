@@ -51,7 +51,7 @@ pub enum ExprKind {
 
 	FnCall {
 		expr: Box<Expr>,
-		args: Vec<Expr>,
+		args: Spanned<Vec<Expr>>,
 	},
 
 	If {

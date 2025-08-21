@@ -104,7 +104,7 @@ pub enum ExprKind<'lcx> {
 
 	FnCall {
 		expr: &'lcx Expr<'lcx>,
-		args: &'lcx [Expr<'lcx>],
+		args: Spanned<&'lcx [Expr<'lcx>]>,
 	},
 
 	If {

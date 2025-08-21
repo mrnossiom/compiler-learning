@@ -46,6 +46,10 @@ impl<T> Spanned<T> {
 	pub const fn new(bit: T, span: Span) -> Self {
 		Self { bit, span }
 	}
+
+	pub const fn with_bit<U>(&self, bit: U) -> Spanned<U> {
+		Spanned::new(bit, self.span)
+	}
 }
 
 #[derive(Debug)]
@@ -68,7 +72,7 @@ pub enum ExprKind {
 	},
 	FnCall {
 		expr: Box<Expr>,
-		args: Vec<Expr>,
+		args: Spanned<Vec<Expr>>,
 	},
 
 	If {

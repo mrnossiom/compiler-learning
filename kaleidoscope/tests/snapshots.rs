@@ -12,7 +12,7 @@ fn fibo() {
 	insta::assert_debug_snapshot!(ast);
 
 	// lowering to HIR
-	let lcx = lowerer::LowerCtx::new();
+	let lcx = lowerer::LowerCtx::new(&scx);
 	let lowerer = lowerer::Lowerer::new(&lcx);
 	let hir = lowerer.lower_items(&ast);
 	insta::assert_debug_snapshot!(hir);

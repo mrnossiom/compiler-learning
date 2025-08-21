@@ -33,6 +33,7 @@ pub mod lowerer {
 
 pub mod ty {
 	use super::*;
+	use crate::ty::{Infer, TyKind};
 
 	pub fn report_unconstrained(ty_span: Span) -> ReportBuilder {
 		Report::build(ReportKind::Error, ty_span)
@@ -50,5 +51,53 @@ pub mod ty {
 		Report::build(ReportKind::Error, path_span)
 			.with_message("type is invalid")
 			.with_label(Label::new(path_span).with_message("type is not in scope"))
+	}
+
+	pub fn variable_not_in_scope(ident_span: Span) -> ReportBuilder {
+		Report::build(ReportKind::Error, ident_span)
+			.with_message("variable is not in scope")
+			.with_label(Label::new(ident_span).with_message("unknown variable"))
+	}
+
+	pub fn function_nb_args_mismatch(
+		call_span: Span,
+		expected_nb: usize,
+		actual_nb: usize,
+		// def_span: Span,
+	) -> ReportBuilder {
+		Report::build(ReportKind::Error, call_span)
+			.with_message("wrong number of arguments to this function")
+			.with_label(Label::new(call_span).with_message(format!(
+				"expect {expected_nb} arguments but got {actual_nb}"
+			)))
+		// TODO: show definition of the original function
+		// .with_label(Label::new(def_span).with_message("here is the original definition"))
+	}
+
+	pub fn tried_to_call_non_function(
+		expr_span: Span,
+		call_span: Span,
+		actual_ty: &TyKind<Infer>,
+	) -> ReportBuilder {
+		Report::build(ReportKind::Error, expr_span)
+			.with_message("tried to call an expression that is not a function")
+			.with_label(Label::new(expr_span).with_message(format!(
+				"this is expected to be a function, but is {actual_ty}"
+			)))
+			.with_label(Label::new(call_span).with_message("this is the call"))
+	}
+
+	pub fn unification_mismatch(expected: &TyKind<Infer>, actual: &TyKind<Infer>) -> ReportBuilder {
+		todo!("ty mismatch `{expected:?}` vs. `{actual:?}`");
+	}
+
+	pub fn infer_unification_mismatch(infer: Infer, actual_infer: Infer) -> ReportBuilder {
+		panic!(
+			"infer kind mismatch: expected infer {{{infer:?}}}, received infer {{{actual_infer:?}}}"
+		)
+	}
+
+	pub fn infer_ty_unification_mismatch(infer: Infer, ty: &TyKind<Infer>) -> ReportBuilder {
+		panic!("infer kind mismatch: expected infer {{{infer:?}}}, received ty {ty:?}")
 	}
 }

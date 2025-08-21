@@ -367,15 +367,16 @@ impl Parser<'_> {
 
 	fn parse_fn_call(&mut self, expr: Expr) -> PResult<Expr> {
 		tracing::trace!(cur = ?self.token.kind, "parse_fn_call");
-		let lo = expr.span;
+		let lo = self.token.span;
+		let expr_span = expr.span;
 		let args = self.parse_seq(Paren, Comma, Parser::parse_expr)?;
 		let expr_kind = ExprKind::FnCall {
 			expr: Box::new(expr),
-			args,
+			args: Spanned::new(args, lo.to(self.last_token.span)),
 		};
 		Ok(Expr {
 			kind: expr_kind,
-			span: lo.to(self.last_token.span),
+			span: expr_span.to(self.last_token.span),
 			id: self.make_node_id(),
 		})
 	}

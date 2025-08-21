@@ -1,7 +1,8 @@
 extern fn putchar(chr: uint);
+extern fn puts(s: *cstr);
+
+fn foo(a: bool) void {}
 
 fn main() void {
-	a := 48;
-	a = a + 1;
-	putchar(a);
+	foo(123, 345);
 }

@@ -1,11 +1,9 @@
-use std::ops::Not;
-
 use ariadne::ReportKind;
 
 use crate::{
 	codegen::{self, Backend, CodeGenBackend, JitBackend, ObjectBackend},
 	lowerer, parser, resolve,
-	session::{Diagnostic, PrintKind, Report, SessionCtx, Span},
+	session::{Diagnostic, OutputKind, PrintKind, Report, SessionCtx, Span},
 	ty,
 };
 
@@ -14,17 +12,6 @@ pub fn pipeline(scx: &SessionCtx) {
 		let report = Report::build(ReportKind::Error, Span::DUMMY)
 			.with_message("expected an input filename");
 		scx.dcx().emit_fatal(&Diagnostic::new(report))
-	});
-
-	let output = scx.options.jit.not().then(|| {
-		scx.options.output.as_ref().unwrap_or_else(|| {
-			let report = Report::build(ReportKind::Error, Span::DUMMY).with_message(
-				"expected an output filename
-help: specify the `--output` flag
-help: you can also use the `--jit` flag to run main directly",
-			);
-			scx.dcx().emit_fatal(&Diagnostic::new(report))
-		})
 	});
 
 	let source = scx
@@ -58,29 +45,32 @@ help: you can also use the `--jit` flag to run main directly",
 
 	// lower HIR bodies to TBIR
 	// codegen TBIR bodies
-	if scx.options.jit {
-		let backend: &mut dyn JitBackend = match scx.options.backend {
-			#[cfg(feature = "cranelift")]
-			Backend::Cranelift => &mut codegen::CraneliftBackend::new_jit(&tcx),
-			#[cfg(feature = "llvm")]
-			Backend::Llvm => &mut codegen::LlvmBackend::new_jit(&tcx),
-		};
+	match &scx.options.output {
+		OutputKind::Jit => {
+			let backend: &mut dyn JitBackend = match scx.options.backend {
+				#[cfg(feature = "cranelift")]
+				Backend::Cranelift => &mut codegen::CraneliftBackend::new_jit(&tcx),
+				#[cfg(feature = "llvm")]
+				Backend::Llvm => &mut codegen::LlvmBackend::new_jit(&tcx),
+			};
 
-		backend.codegen_root(&hir);
-		backend.call_main();
-	} else {
-		let mut backend = match scx.options.backend {
-			#[cfg(feature = "cranelift")]
-			Backend::Cranelift => codegen::CraneliftBackend::new_object(&tcx),
-			#[cfg(feature = "llvm")]
-			Backend::Llvm => todo!("no object backend for llvm"),
-		};
+			backend.codegen_root(&hir);
+			backend.call_main();
+		}
+		OutputKind::Object(path) => {
+			let mut backend = match scx.options.backend {
+				#[cfg(feature = "cranelift")]
+				Backend::Cranelift => codegen::CraneliftBackend::new_object(&tcx),
+				#[cfg(feature = "llvm")]
+				Backend::Llvm => todo!("no object backend for llvm"),
+			};
 
-		backend.codegen_root(&hir);
+			backend.codegen_root(&hir);
 
-		let object = backend.get_object();
-		let bytes = object.emit().unwrap();
-		std::fs::write(output.unwrap(), bytes).unwrap();
+			let object = backend.get_object();
+			let bytes = object.emit().unwrap();
+			std::fs::write(path, bytes).unwrap();
+		}
 	}
 
 	tracing::info!("Reached pipeline end successfully!");

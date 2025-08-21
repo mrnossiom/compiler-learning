@@ -441,7 +441,7 @@ impl FunctionGenerator<'_, '_> {
 					.declare_func_in_func(*func_id, self.builder.func);
 
 				let mut argsz = Vec::new();
-				for arg in args {
+				for arg in &args.bit {
 					match self.codegen_expr(arg)? {
 						MaybeValue::Value(expr_value) => {
 							argsz.push(expr_value);

@@ -5,6 +5,8 @@ use kaleic::{driver, session::SessionCtx};
 use tracing_subscriber::{EnvFilter, FmtSubscriber, fmt::time};
 
 mod options {
+	use std::path::PathBuf;
+
 	use clap::ValueEnum;
 	use kaleic::{codegen, session};
 
@@ -45,19 +47,31 @@ mod options {
 			}
 		}
 	}
+
+	#[derive(Debug, Clone, ValueEnum)]
+	pub enum OutputKind {
+		Jit,
+		Object,
+	}
+
+	impl From<OutputKind> for session::OutputKind {
+		fn from(val: OutputKind) -> Self {
+			match val {
+				OutputKind::Jit => Self::Jit,
+				OutputKind::Object => Self::Object(PathBuf::from("out.o")),
+			}
+		}
+	}
 }
 
 #[derive(clap::Parser)]
 struct Args {
 	pub input: Option<PathBuf>,
-	#[clap(long)]
-	pub output: Option<PathBuf>,
 
+	#[clap(long)]
+	pub output: Option<options::OutputKind>,
 	#[clap(long)]
 	pub backend: Option<options::Backend>,
-
-	#[clap(long)]
-	pub jit: bool,
 
 	#[clap(long)]
 	pub print: Vec<options::PrintKind>,
@@ -75,12 +89,14 @@ fn main() {
 	let mut scx = SessionCtx::default();
 
 	scx.options.input = args.input;
-	scx.options.output = args.output;
 
+	if let Some(val) = args.output {
+		scx.options.output = val.into();
+	}
 	if let Some(val) = args.backend {
 		scx.options.backend = val.into();
 	}
-	scx.options.jit = args.jit;
+
 	scx.options
 		.print
 		.extend(args.print.into_iter().map(Into::into));

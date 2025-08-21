@@ -234,10 +234,10 @@ impl<'lcx> Lowerer<'lcx> {
 			ast::ExprKind::Literal(lit, ident) => ExprKind::Literal(*lit, *ident),
 			ast::ExprKind::Binary { op, left, right } => self.lower_binary(op, left, right),
 			ast::ExprKind::FnCall { expr, args } => {
-				let args = self.alloc_iter(args.iter().map(|e| self.lower_expr(e)));
+				let nargs = self.alloc_iter(args.bit.iter().map(|e| self.lower_expr(e)));
 				ExprKind::FnCall {
 					expr: self.alloc(self.lower_expr(expr)),
-					args,
+					args: args.with_bit(nargs),
 				}
 			}
 			ast::ExprKind::If {

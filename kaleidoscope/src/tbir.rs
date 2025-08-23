@@ -5,7 +5,7 @@
 use crate::{
 	ast::{self, Spanned},
 	hir,
-	lexer::{BinOp, LiteralKind},
+	lexer::{BinaryOp, LiteralKind, UnaryOp},
 	session::{Span, Symbol},
 	ty,
 };
@@ -45,9 +45,10 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
 	Literal(LiteralKind, Symbol),
-	Variable(ast::Ident),
+	Access(ast::Ident),
 
-	Binary(Spanned<BinOp>, Box<Expr>, Box<Expr>),
+	Unary(Spanned<UnaryOp>, Box<Expr>),
+	Binary(Spanned<BinaryOp>, Box<Expr>, Box<Expr>),
 
 	FnCall {
 		expr: Box<Expr>,

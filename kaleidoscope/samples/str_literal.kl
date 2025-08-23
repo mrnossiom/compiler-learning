@@ -1,6 +1,6 @@
 extern fn putchar(chr: uint);
-// extern fn puts(s: *cstr);
-extern fn puts(s: *str);
+// extern fn puts(s: &cstr);
+extern fn puts(s: &str);
 
 fn main() void {
 	// puts(c"Hello, World!");

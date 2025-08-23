@@ -1,0 +1,44 @@
+fn main() {
+	var option = Some(42);
+	if option is Some(num) {
+		print(num)
+	}
+
+	var n = 10;
+	while n != 0 {
+		n = n - 1; // n -= 1;
+	}
+
+	var cond = true;
+	while cond.!
+		and cond is true
+	{
+		// snip
+	}
+
+	var stmts = [];
+
+	var stmts_iter = stmts.iter();
+	while stmts_iter.next() is Some(stmt) { }
+
+	in stmts for stmt { }
+	in stmts the stmt { }
+	for stmts each stmt { /* snip */ }
+	all stmts be stmt {}
+
+	cst og_num = 10;
+	var myref = &og_num;
+	var mynum = myref.*;
+	
+	var res = Ok(98);
+	var num = res.?;
+
+	var num = 123;
+	match num {
+		123 -> {}
+		else -> {}
+
+		123 => {}
+		else => {}
+	}
+}

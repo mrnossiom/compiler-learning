@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::{
-	lexer::{BinOp, LiteralKind},
+	lexer::{BinaryOp, LiteralKind, UnaryOp},
 	session::{Span, Symbol},
 };
 
@@ -61,12 +61,18 @@ pub struct Expr {
 
 #[derive(Debug)]
 pub enum ExprKind {
-	// Expression atomics
-	Variable(Ident),
+	// Atomics
+	Access(Ident),
 	Literal(LiteralKind, Symbol),
 
+	// Composition
+	Paren(Box<Expr>),
+	Unary {
+		op: Spanned<UnaryOp>,
+		expr: Box<Expr>,
+	},
 	Binary {
-		op: Spanned<BinOp>,
+		op: Spanned<BinaryOp>,
 		left: Box<Expr>,
 		right: Box<Expr>,
 	},

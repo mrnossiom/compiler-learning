@@ -7,7 +7,7 @@ use crate::ast::Ident;
 use crate::session::{BytePos, SessionCtx, Span, Symbol};
 
 #[allow(clippy::enum_glob_use)]
-use self::{BinOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*};
+use self::{BinaryOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*, UnaryOp::*};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Spacing {
@@ -31,12 +31,18 @@ impl Token {
 
 	fn maybe_glue_joint(&self, next: &Self) -> Option<Self> {
 		let glued_kind = match (self.kind, next.kind) {
-			(Eq, Eq) => BinOp(EqEq),
-			(BinOp(Gt), Eq) => BinOp(Ge),
-			(BinOp(Lt), Eq) => BinOp(Le),
+			(Eq, Eq) => BinaryOp(EqEq),
+			(BinaryOp(Gt), Eq) => BinaryOp(Ge),
+			(BinaryOp(Lt), Eq) => BinaryOp(Le),
 
-			(BinOp(Minus), BinOp(Lt)) => Arrow,
-			(Not, Eq) => BinOp(Ne),
+			(BinaryOp(Minus), BinaryOp(Lt)) => Arrow,
+			(UnaryOp(Not), Eq) => BinaryOp(Ne),
+
+			(BinaryOp(Lt), BinaryOp(Lt)) => BinaryOp(Shl),
+			(BinaryOp(Gt), BinaryOp(Gt)) => BinaryOp(Shr),
+
+			(Ampersand, Ampersand) => todo!("for recovery, see `and` kw"),
+			(BinaryOp(Or), BinaryOp(Or)) => todo!("for recovery, see `or` kw"),
 
 			(_, _) => return None,
 		};
@@ -59,7 +65,8 @@ pub enum TokenKind {
 	Keyword(Keyword),
 	Literal(LiteralKind, Symbol),
 
-	BinOp(BinOp),
+	UnaryOp(UnaryOp),
+	BinaryOp(BinaryOp),
 
 	Open(Delimiter),
 	Close(Delimiter),
@@ -70,9 +77,8 @@ pub enum TokenKind {
 	Colon,
 	Semi,
 	Dot,
-
-	/// `!`
-	Not,
+	/// `&`
+	Ampersand,
 
 	/// `=`
 	Eq,
@@ -91,7 +97,8 @@ impl fmt::Display for TokenKind {
 			Keyword(_) => write!(f, "a keyword"),
 			Literal(kind, _) => write!(f, "a {kind} literal"),
 
-			BinOp(kind) => write!(f, "{kind}"),
+			UnaryOp(kind) => write!(f, "{kind}"),
+			BinaryOp(kind) => write!(f, "{kind}"),
 
 			Open(kind) => write!(f, "an opening {kind}"),
 			Close(kind) => write!(f, "a closing {kind}"),
@@ -101,8 +108,8 @@ impl fmt::Display for TokenKind {
 			Colon => write!(f, "a colon"),
 			Semi => write!(f, "a semicolon"),
 			Dot => write!(f, "a dot"),
+			Ampersand => write!(f, "an ampersand"),
 
-			Not => write!(f, "a negate sign"),
 			Eq => write!(f, "an assign sign"),
 
 			Unknown => write!(f, "an unknown token"),
@@ -133,15 +140,18 @@ impl fmt::Display for LiteralKind {
 pub enum Keyword {
 	Fn,
 	Extern,
-	Const,
+
+	Var,
+	Cst,
 
 	If,
 	Else,
+	Is,
 
 	Loop,
 	While,
-	For,
 	In,
+	For,
 
 	Return,
 	Break,
@@ -170,16 +180,51 @@ impl fmt::Display for Delimiter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinOp {
-	Plus,
-	Minus,
-	Mul,
-	Div,
+pub enum UnaryOp {
+	/// `!`
+	Not,
+}
 
+impl fmt::Display for UnaryOp {
+	/// Should fit in the sentence "found {}"
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Not => write!(f, "a negate sign"),
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+	// Arithmetic
+	/// `+`
+	Plus,
+	/// `-`
+	Minus,
+	/// `*`
+	Mul,
+	/// `/`
+	Div,
+	/// `%`
+	///
 	/// Also commonly known as `Rem`
 	#[doc(alias = "Rem")]
 	Mod,
 
+	// Bitwise
+	/// `&`
+	And,
+	/// `|`
+	Or,
+	/// `^`
+	Xor,
+
+	/// `<<`
+	Shl,
+	/// `>>`
+	Shr,
+
+	// Compairaison
 	/// `>`
 	Gt,
 	/// `>=`
@@ -195,7 +240,7 @@ pub enum BinOp {
 	Ne,
 }
 
-impl fmt::Display for BinOp {
+impl fmt::Display for BinaryOp {
 	/// Should fit in the sentence "found {}"
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
@@ -204,6 +249,13 @@ impl fmt::Display for BinOp {
 			Mul => write!(f, "a multiplication operator"),
 			Div => write!(f, "a division operator"),
 			Mod => write!(f, "a modulo operator"),
+
+			And => write!(f, "an and operator"),
+			Or => write!(f, "an or operator"),
+			Xor => write!(f, "a xor operator"),
+
+			Shl => write!(f, "a shift left operator"),
+			Shr => write!(f, "a shift right operator"),
 
 			Gt => write!(f, "a greater than comparator"),
 			Ge => write!(f, "a greater or equal comparator"),
@@ -216,14 +268,16 @@ impl fmt::Display for BinOp {
 	}
 }
 
-impl BinOp {
+impl BinaryOp {
 	#[must_use]
 	pub const fn precedence(self) -> u32 {
 		match self {
-			Self::Mul | Self::Div | Self::Mod => 4,
-			Self::Minus | Self::Plus => 3,
-			Self::Gt | Self::Ge | Self::Lt | Self::Le => 2,
-			Self::Ne | Self::EqEq => 1,
+			Self::Mul | Self::Div | Self::Mod => 48,
+			Self::Minus | Self::Plus => 40,
+			Self::Shl | Self::Shr => 32,
+			Self::And | Self::Or | Self::Xor => 24,
+			Self::Gt | Self::Ge | Self::Lt | Self::Le => 16,
+			Self::Ne | Self::EqEq => 8,
 		}
 	}
 }
@@ -268,6 +322,10 @@ impl<'scx, 'src> Lexer<'scx, 'src> {
 		self.chars.clone().next().unwrap_or(EOF_CHAR)
 	}
 
+	fn second(&self) -> char {
+		self.chars.clone().nth(1).unwrap_or(EOF_CHAR)
+	}
+
 	fn bump_while(&mut self, mut cond: impl FnMut(char) -> bool) {
 		while cond(self.first()) && !self.is_eof() {
 			self.bump();
@@ -297,18 +355,22 @@ impl Lexer<'_, '_> {
 			let kind = match self.bump()? {
 				c if is_ident_start(c) => {
 					self.bump_while(is_ident_continue);
+					// TODO: make kw an symbol wrapper with preinterned value
 					match self.str_from(start) {
 						"fn" => Keyword(Fn),
 						"extern" => Keyword(Extern),
-						"const" => Keyword(Const),
+
+						"var" => Keyword(Var),
+						"cst" => Keyword(Cst),
 
 						"if" => Keyword(If),
 						"else" => Keyword(Else),
+						"is" => Keyword(Is),
 
 						"loop" => Keyword(Loop),
 						"while" => Keyword(While),
-						"for" => Keyword(For),
 						"in" => Keyword(In),
+						"for" => Keyword(For),
 
 						"return" => Keyword(Return),
 						"break" => Keyword(Break),
@@ -321,8 +383,11 @@ impl Lexer<'_, '_> {
 				// Int or Float
 				c if c.is_ascii_digit() => {
 					self.bump_while(|c| char::is_ascii_digit(&c));
-					let kind = if self.first() == '.' {
+					// avoid to eat the dot if this is a mac call after
+					let kind = if self.first() == '.' && !is_ident_start(self.second()) {
 						self.bump();
+						// TODO: ensure that the float indeed has a digit after the dot
+						assert!(self.token.is_some_and(|c| char::is_ascii_digit(&c)));
 						self.bump_while(|c| char::is_ascii_digit(&c));
 						Float
 					} else {
@@ -365,9 +430,9 @@ impl Lexer<'_, '_> {
 				'{' => Open(Brace),
 				'}' => Close(Brace),
 
-				'+' => BinOp(Plus),
-				'-' => BinOp(Minus),
-				'*' => BinOp(Mul),
+				'+' => BinaryOp(Plus),
+				'-' => BinaryOp(Minus),
+				'*' => BinaryOp(Mul),
 				'/' => match self.first() {
 					'/' => {
 						// eat the whole line
@@ -382,20 +447,22 @@ impl Lexer<'_, '_> {
 						spacing = Spacing::Alone;
 						continue;
 					}
-					_ => BinOp(Div),
+					_ => BinaryOp(Div),
 				},
-				'%' => BinOp(Mod),
+				'%' => BinaryOp(Mod),
 
-				'>' => BinOp(Gt),
-				'<' => BinOp(Lt),
+				'>' => BinaryOp(Gt),
+				'<' => BinaryOp(Lt),
 				'=' => Eq,
 
-				'!' => Not,
+				'!' => UnaryOp(Not),
 
 				',' => Comma,
 				'.' => Dot,
 				':' => Colon,
 				';' => Semi,
+
+				'&' => Ampersand,
 
 				_ => Unknown,
 			};

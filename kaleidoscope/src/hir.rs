@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::{
 	ast::{self, Spanned},
-	lexer::{BinOp, LiteralKind},
+	lexer::{BinaryOp, LiteralKind, UnaryOp},
 	session::{Span, Symbol},
 };
 
@@ -97,10 +97,11 @@ pub struct Expr<'lcx> {
 
 #[derive(Debug)]
 pub enum ExprKind<'lcx> {
-	Variable(ast::Ident),
+	Access(ast::Ident),
 	Literal(LiteralKind, Symbol),
 
-	Binary(Spanned<BinOp>, &'lcx Expr<'lcx>, &'lcx Expr<'lcx>),
+	Unary(Spanned<UnaryOp>, &'lcx Expr<'lcx>),
+	Binary(Spanned<BinaryOp>, &'lcx Expr<'lcx>, &'lcx Expr<'lcx>),
 
 	FnCall {
 		expr: &'lcx Expr<'lcx>,

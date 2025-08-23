@@ -7,7 +7,8 @@ use std::{
 
 use crate::{
 	ast::{self, Ident},
-	bug, errors, hir, lexer,
+	bug, errors, hir,
+	lexer::{self, UnaryOp},
 	resolve::Environment,
 	session::{SessionCtx, Span, Symbol},
 	tbir,
@@ -270,7 +271,7 @@ impl Inferer<'_> {
 
 	fn infer_expr<'lcx>(&mut self, expr: &'lcx hir::Expr<'lcx>) -> TyKind<Infer> {
 		let ty = match &expr.kind {
-			hir::ExprKind::Variable(ident) => self.resolve_var_ty(ident),
+			hir::ExprKind::Access(ident) => self.resolve_var_ty(ident),
 			hir::ExprKind::Literal(lit, _ident) => match lit {
 				lexer::LiteralKind::Integer => {
 					TyKind::Infer(self.tcx.next_infer_tag(), Infer::Integer)
@@ -278,19 +279,29 @@ impl Inferer<'_> {
 				lexer::LiteralKind::Float => TyKind::Infer(self.tcx.next_infer_tag(), Infer::Float),
 				lexer::LiteralKind::Str => TyKind::Primitive(PrimitiveKind::Str),
 			},
+
+			hir::ExprKind::Unary(op, expr) => {
+				let expr_ty = self.infer_expr(expr);
+
+				self.unify(&TyKind::Primitive(PrimitiveKind::Bool), &expr_ty);
+
+				match op.bit {
+					UnaryOp::Not => TyKind::Primitive(PrimitiveKind::Bool),
+				}
+			}
 			hir::ExprKind::Binary(op, left, right) => {
 				let left = self.infer_expr(left);
 				let right = self.infer_expr(right);
 
-				// TODO: allow with bools
+				// TODO: allow with bools, and other int types
 				self.unify(&TyKind::Primitive(PrimitiveKind::UnsignedInt), &left);
 				self.unify(&TyKind::Primitive(PrimitiveKind::UnsignedInt), &right);
 
 				#[allow(clippy::enum_glob_use)]
 				let expected = {
-					use lexer::BinOp::*;
+					use lexer::BinaryOp::*;
 					match op.bit {
-						Plus | Minus | Mul | Div | Mod => {
+						Plus | Minus | Mul | Div | Mod | And | Or | Xor | Shl | Shr => {
 							TyKind::Primitive(PrimitiveKind::UnsignedInt)
 						}
 						Gt | Ge | Lt | Le | EqEq | Ne => TyKind::Primitive(PrimitiveKind::Bool),
@@ -506,8 +517,8 @@ impl fmt::Display for Infer {
 	// Should fit in the sentence "found {}"
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Self::Integer => write!(f, "{{{{integer}}}}"),
-			Self::Float => write!(f, "{{{{float}}}}"),
+			Self::Integer => write!(f, "{{integer}}"),
+			Self::Float => write!(f, "{{float}}"),
 			Self::Generic | Self::Explicit => write!(f, "_"),
 		}
 	}
@@ -599,8 +610,12 @@ impl TbirBuilder<'_> {
 
 	fn build_expr(&self, expr: &hir::Expr<'_>) -> tbir::Expr {
 		let kind = match expr.kind {
-			hir::ExprKind::Variable(ident) => tbir::ExprKind::Variable(ident),
+			hir::ExprKind::Access(ident) => tbir::ExprKind::Access(ident),
 			hir::ExprKind::Literal(kind, sym) => tbir::ExprKind::Literal(kind, sym),
+
+			hir::ExprKind::Unary(op, expr) => {
+				tbir::ExprKind::Unary(op, Box::new(self.build_expr(expr)))
+			}
 			hir::ExprKind::Binary(op, left, right) => tbir::ExprKind::Binary(
 				op,
 				Box::new(self.build_expr(left)),

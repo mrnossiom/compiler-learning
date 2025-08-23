@@ -230,8 +230,11 @@ impl<'lcx> Lowerer<'lcx> {
 
 	fn lower_expr(&self, expr: &'lcx ast::Expr) -> Expr<'lcx> {
 		let kind = match &expr.kind {
-			ast::ExprKind::Variable(ident) => ExprKind::Variable(*ident),
+			ast::ExprKind::Access(ident) => ExprKind::Access(*ident),
 			ast::ExprKind::Literal(lit, ident) => ExprKind::Literal(*lit, *ident),
+
+			ast::ExprKind::Paren(expr) => self.lower_expr(expr).kind,
+			ast::ExprKind::Unary { op, expr } => self.lower_unary(op, expr),
 			ast::ExprKind::Binary { op, left, right } => self.lower_binary(op, left, right),
 			ast::ExprKind::FnCall { expr, args } => {
 				let nargs = self.alloc_iter(args.bit.iter().map(|e| self.lower_expr(e)));
@@ -266,9 +269,17 @@ impl<'lcx> Lowerer<'lcx> {
 		}
 	}
 
+	fn lower_unary(
+		&self,
+		op: &'lcx Spanned<lexer::UnaryOp>,
+		expr: &'lcx ast::Expr,
+	) -> ExprKind<'lcx> {
+		ExprKind::Unary(*op, self.alloc(self.lower_expr(expr)))
+	}
+
 	fn lower_binary(
 		&self,
-		op: &'lcx Spanned<lexer::BinOp>,
+		op: &'lcx Spanned<lexer::BinaryOp>,
 		left: &'lcx ast::Expr,
 		right: &'lcx ast::Expr,
 	) -> ExprKind<'lcx> {

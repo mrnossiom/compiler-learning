@@ -9,7 +9,8 @@ use cranelift_object::{ObjectModule, ObjectProduct};
 use crate::{
 	Result, ast, bug,
 	codegen::{CodeGenBackend, JitBackend, ObjectBackend},
-	hir, lexer,
+	hir,
+	lexer::{self, BinaryOp},
 	session::{PrintKind, SessionCtx, Symbol},
 	tbir,
 	ty::{self, TyCtx},
@@ -33,7 +34,6 @@ impl MaybeValue {
 }
 
 pub struct Generator<'tcx, M: Module> {
-	scx: &'tcx SessionCtx,
 	tcx: &'tcx TyCtx<'tcx>,
 
 	module: M,
@@ -46,7 +46,6 @@ pub struct Generator<'tcx, M: Module> {
 impl<'tcx, M: Module> Generator<'tcx, M> {
 	pub fn new(tcx: &'tcx TyCtx, isa: Arc<dyn TargetIsa + 'static>, module: M) -> Self {
 		Self {
-			scx: tcx.scx,
 			tcx,
 			module,
 			isa,
@@ -149,7 +148,7 @@ impl<M: Module> Generator<'_, M> {
 
 		let signature = self.lower_signature(decl);
 
-		let func_name = self.scx.symbols.resolve(name);
+		let func_name = self.tcx.scx.symbols.resolve(name);
 		let func_id = self
 			.module
 			.declare_function(&func_name, linkage, &signature)
@@ -207,7 +206,7 @@ impl<M: Module> Generator<'_, M> {
 		}
 
 		let mut generator = FunctionGenerator {
-			scx: self.scx,
+			scx: self.tcx.scx,
 
 			builder,
 			functions: &self.functions,
@@ -229,7 +228,7 @@ impl<M: Module> Generator<'_, M> {
 			.optimize(self.module.isa(), &mut ControlPlane::default())
 			.unwrap();
 
-		if self.scx.options.print.contains(&PrintKind::BackendIr) {
+		if self.tcx.scx.options.print.contains(&PrintKind::BackendIr) {
 			print!("{}", context.func.display());
 		}
 
@@ -269,7 +268,7 @@ impl<M: Module> CodeGenBackend for Generator<'_, M> {
 					let decl = self.tcx.lower_fn_decl(decl);
 
 					let body = self.tcx.typeck_fn(ident, &decl, body);
-					if self.scx.options.print.contains(&PrintKind::TypedBodyIr) {
+					if self.tcx.scx.options.print.contains(&PrintKind::TypedBodyIr) {
 						println!("{body:#?}");
 					}
 					let func_id = function_ids.get(&ident.name).unwrap();
@@ -284,7 +283,7 @@ impl JitBackend for Generator<'_, JITModule> {
 	fn call_main(&mut self) {
 		self.module.finalize_definitions().unwrap();
 
-		let main = self.scx.symbols.intern("main");
+		let main = self.tcx.scx.symbols.intern("main");
 		let main_id = self.functions.get(&main).unwrap();
 		let func = self.module.get_finalized_function(*main_id);
 		// TODO: this is unsafe as some functions ask for arguments, and lot a more reasons
@@ -427,17 +426,20 @@ impl FunctionGenerator<'_, '_> {
 				};
 				MaybeValue::Value(value)
 			}
-			tbir::ExprKind::Variable(ident) => match self.values.get(&ident.name) {
+			tbir::ExprKind::Access(ident) => match self.values.get(&ident.name) {
 				Some(Some(var)) => MaybeValue::Value(self.builder.use_var(*var)),
 				Some(None) => MaybeValue::Zst,
 				None => return Err("var undefined"),
 			},
+
+			tbir::ExprKind::Unary(op, expr) => todo!("codegen unary {op:?} {expr:?}"),
+
 			tbir::ExprKind::Binary(op, left, right) => {
 				MaybeValue::Value(self.codegen_bin_op(*op, left, right)?)
 			}
 			tbir::ExprKind::FnCall { expr, args } => {
 				// TODO: allow indirect calls
-				let tbir::ExprKind::Variable(ident) = expr.kind else {
+				let tbir::ExprKind::Access(ident) = expr.kind else {
 					todo!("not a fn")
 				};
 				let Some(func_id) = self.functions.get(&ident.name) else {
@@ -524,7 +526,7 @@ impl FunctionGenerator<'_, '_> {
 impl FunctionGenerator<'_, '_> {
 	fn codegen_bin_op(
 		&mut self,
-		op: ast::Spanned<lexer::BinOp>,
+		op: ast::Spanned<lexer::BinaryOp>,
 		left: &tbir::Expr,
 		right: &tbir::Expr,
 	) -> Result<Value> {
@@ -538,25 +540,28 @@ impl FunctionGenerator<'_, '_> {
 			_ => panic!(),
 		};
 
+		let ins = self.builder.ins();
 		let value = match op.bit {
-			lexer::BinOp::Plus => self.builder.ins().iadd(lhs, rhs),
-			lexer::BinOp::Minus => self.builder.ins().isub(lhs, rhs),
-			lexer::BinOp::Mul => self.builder.ins().imul(lhs, rhs),
-			lexer::BinOp::Div => self.builder.ins().udiv(lhs, rhs),
-			lexer::BinOp::Mod => self.builder.ins().urem(lhs, rhs),
+			BinaryOp::Plus => ins.iadd(lhs, rhs),
+			BinaryOp::Minus => ins.isub(lhs, rhs),
+			BinaryOp::Mul => ins.imul(lhs, rhs),
+			BinaryOp::Div => ins.udiv(lhs, rhs),
+			BinaryOp::Mod => ins.urem(lhs, rhs),
 
-			lexer::BinOp::Gt => self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs),
-			lexer::BinOp::Ge => self
-				.builder
-				.ins()
-				.icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs),
-			lexer::BinOp::Lt => self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs),
-			lexer::BinOp::Le => self
-				.builder
-				.ins()
-				.icmp(IntCC::SignedLessThanOrEqual, lhs, rhs),
-			lexer::BinOp::EqEq => self.builder.ins().icmp(IntCC::Equal, lhs, rhs),
-			lexer::BinOp::Ne => self.builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
+			BinaryOp::And => ins.band(lhs, rhs),
+			BinaryOp::Or => ins.bor(lhs, rhs),
+			BinaryOp::Xor => ins.bxor(lhs, rhs),
+
+			BinaryOp::Shl => ins.ishl(lhs, rhs),
+			BinaryOp::Shr => ins.sshr(lhs, rhs),
+
+			BinaryOp::Gt => ins.icmp(IntCC::SignedGreaterThan, lhs, rhs),
+			BinaryOp::Ge => ins.icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs),
+			BinaryOp::Lt => ins.icmp(IntCC::SignedLessThan, lhs, rhs),
+			BinaryOp::Le => ins.icmp(IntCC::SignedLessThanOrEqual, lhs, rhs),
+
+			BinaryOp::EqEq => ins.icmp(IntCC::Equal, lhs, rhs),
+			BinaryOp::Ne => ins.icmp(IntCC::NotEqual, lhs, rhs),
 		};
 
 		Ok(value)

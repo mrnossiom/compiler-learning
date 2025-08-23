@@ -3,9 +3,10 @@
 extern fn putchar(c: uint);
 
 fn main() {
-	n := 0;
+	var n = 0;
 	while n != 10 {
-		res := fibo(n);
+		var res = fibo(n);
+
 		print_num(res);
 		// newline
 		putchar(10);
@@ -16,7 +17,7 @@ fn main() {
 
 fn num_to_ascii(n: uint) uint /*Option<uint>*/ {
 	if n <= 9 {
-		num_ascii_base := 48;
+		var num_ascii_base = 48;
 		// Some(num_ascii_base + n)
 		num_ascii_base + n
 	} else {
@@ -30,7 +31,7 @@ fn print_num_rev(n: uint) {
 		putchar(num_to_ascii(0));
 	} else {
 		while n != 0 {
-			rest := n % 10;
+			var rest = n % 10;
 			n = n / 10;
 			putchar(num_to_ascii(rest));
 		}
@@ -44,8 +45,8 @@ fn print_num(n: uint) {
     };
 
     // Calculate the divisor to get the most significant digit
-    divisor := 1;
-    temp := n;
+    var divisor = 1;
+    var temp = n;
     while temp >= 10 {
         temp = temp / 10;
         divisor = divisor * 10;
@@ -56,7 +57,7 @@ fn print_num(n: uint) {
 
     // Print each digit from most to least significant
     while divisor > 0 {
-        digit := temp / divisor;  // Get the current most significant digit
+        var digit = temp / divisor;  // Get the current most significant digit
         putchar(num_to_ascii(digit));
         
         // Remove the most significant digit
@@ -69,11 +70,11 @@ fn print_num(n: uint) {
 
 
 fn fibo(n: uint) uint {
-	a := 0;
-	b := 1;
+	var a = 0;
+	var b = 1;
 
 	while n != 0 {
-		next := a + b;
+		var next = a + b;
 		a = b;
 		b = next;
 

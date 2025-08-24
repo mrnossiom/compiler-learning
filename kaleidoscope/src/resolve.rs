@@ -46,12 +46,15 @@ impl Collector<'_> {
 
 	fn collect_item(&mut self, item: &hir::Item) {
 		match &item.kind {
-			hir::ItemKind::Function { ident, decl, .. } | hir::ItemKind::Extern { ident, decl } => {
+			hir::ItemKind::Function { name, decl, .. }
+			| hir::ItemKind::Extern { name, decl, .. } => {
 				let decl = self.tcx.lower_fn_decl(decl);
 				self.environment
 					.values
-					.insert(ident.name, ty::TyKind::Fn(Box::new(decl)));
+					.insert(name.sym, ty::TyKind::Fn(Box::new(decl)));
 			}
+
+			hir::ItemKind::Adt { .. } | hir::ItemKind::Trait { .. } => todo!(),
 		}
 	}
 }

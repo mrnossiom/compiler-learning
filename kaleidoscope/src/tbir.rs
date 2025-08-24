@@ -29,8 +29,8 @@ pub struct Stmt {
 #[derive(Debug, Clone)]
 pub enum StmtKind {
 	Expr(Expr),
-	Let { ident: ast::Ident, value: Expr },
-	Assign { target: ast::Ident, value: Expr },
+	Let { name: ast::Ident, value: Expr },
+	Assign { target: ast::Path, value: Expr },
 	Loop { block: Block },
 }
 
@@ -45,7 +45,7 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
 	Literal(LiteralKind, Symbol),
-	Access(ast::Ident),
+	Access(ast::Path),
 
 	Unary(Spanned<UnaryOp>, Box<Expr>),
 	Binary(Spanned<BinaryOp>, Box<Expr>, Box<Expr>),

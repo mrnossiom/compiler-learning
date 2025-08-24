@@ -3,11 +3,14 @@
 use std::sync::atomic::{self, AtomicU32};
 
 use crate::{
-	ast::{self, Spanned},
+	ast::{self, Function, Spanned, Type},
 	errors,
-	hir::{Block, Expr, ExprKind, FnDecl, Item, ItemKind, NodeId, Root, Stmt, StmtKind},
+	hir::{
+		AdtFieldDef, AdtVariant, Block, Expr, ExprKind, FnDecl, Item, ItemKind, NodeId, Root, Stmt,
+		StmtKind,
+	},
 	lexer,
-	session::SessionCtx,
+	session::{SessionCtx, Span},
 };
 
 #[derive(Debug)]
@@ -74,15 +77,59 @@ impl Lowerer<'_> {
 
 	fn lower_item(&self, item: &ast::Item) -> Item {
 		let kind = match &item.kind {
-			ast::ItemKind::Function { ident, decl, body } => ItemKind::Function {
-				ident: *ident,
+			ast::ItemKind::Function(Function {
+				name,
+				decl,
+				body,
+				externess,
+			}) => ItemKind::Function {
+				name: *name,
 				decl: Box::new(self.lower_fn_decl(decl)),
-				body: Box::new(self.lower_block(body)),
+				body: body.as_ref().map(|block| Box::new(self.lower_block(block))),
 			},
-			ast::ItemKind::Extern { ident, decl } => ItemKind::Extern {
-				ident: *ident,
-				decl: Box::new(self.lower_fn_decl(decl)),
+
+			ast::ItemKind::Type(Type { name, alias }) => todo!(),
+			ast::ItemKind::Struct {
+				name,
+				generics,
+				fields,
+			} => {
+				let struct_variant = AdtVariant {
+					name: *name,
+					fields: fields
+						.iter()
+						.map(|field| self.lower_field_def(field))
+						.collect(),
+					span: item.span,
+				};
+				ItemKind::Adt {
+					name: *name,
+					variants: vec![struct_variant],
+				}
+			}
+			ast::ItemKind::Enum {
+				name,
+				generics,
+				variants,
+			} => ItemKind::Adt {
+				name: *name,
+				variants: variants
+					.iter()
+					.map(|variant| self.lower_variant(variant))
+					.collect(),
 			},
+
+			// TODO
+			ast::ItemKind::Trait {
+				name,
+				generics,
+				members,
+			} => ItemKind::Trait { name: *name },
+			ast::ItemKind::TraitImpl {
+				type_,
+				trait_,
+				members,
+			} => todo!(),
 		};
 		Item {
 			kind,
@@ -97,9 +144,43 @@ impl Lowerer<'_> {
 			span: decl.span.end(),
 		});
 		FnDecl {
-			inputs: decl.args.clone(),
+			inputs: decl.params.clone(),
 			output: Box::new(output),
 			span: decl.span,
+		}
+	}
+
+	fn lower_field_def(&self, field: &ast::FieldDef) -> AdtFieldDef {
+		AdtFieldDef {
+			name: field.name,
+			ty: field.ty.clone(),
+		}
+	}
+
+	fn lower_variant(&self, variant: &ast::Variant) -> AdtVariant {
+		let fields = match &variant.kind {
+			ast::VariantKind::Bare => vec![],
+			ast::VariantKind::Tuple(fields) => fields
+				.iter()
+				.enumerate()
+				.map(|(i, ty)| AdtFieldDef {
+					name: ast::Ident::new(
+						self.lcx.scx.symbols.intern(&format!("{i}")),
+						Span::DUMMY,
+					),
+					ty: ty.clone(),
+				})
+				.collect(),
+			ast::VariantKind::Struct(fields) => fields
+				.iter()
+				.map(|field| self.lower_field_def(field))
+				.collect(),
+		};
+
+		AdtVariant {
+			name: variant.name,
+			fields,
+			span: variant.span,
 		}
 	}
 
@@ -115,11 +196,13 @@ impl Lowerer<'_> {
 				ast::StmtKind::Loop { body } => StmtKind::Loop {
 					block: Box::new(self.lower_block(body)),
 				},
-				// desugar to simple loop
 				ast::StmtKind::WhileLoop { check, body } => self.lower_while_loop(check, body),
-				ast::StmtKind::ForLoop { .. } => todo!("for loop is not parsed"),
 
-				ast::StmtKind::Let { ident, ty, value } => StmtKind::Let {
+				ast::StmtKind::Let {
+					name: ident,
+					ty,
+					value,
+				} => StmtKind::Let {
 					ident: *ident,
 					ty: Box::new(ty.as_ref().map_or_else(
 						|| ast::Ty {
@@ -128,10 +211,6 @@ impl Lowerer<'_> {
 						},
 						|ty| ty.as_ref().clone(),
 					)),
-					value: Box::new(self.lower_expr(value)),
-				},
-				ast::StmtKind::Assign { target, value } => StmtKind::Assign {
-					target: *target,
 					value: Box::new(self.lower_expr(value)),
 				},
 
@@ -212,7 +291,7 @@ impl Lowerer<'_> {
 
 	fn lower_expr(&self, expr: &ast::Expr) -> Expr {
 		let kind = match &expr.kind {
-			ast::ExprKind::Access(ident) => ExprKind::Access(*ident),
+			ast::ExprKind::Access(path) => ExprKind::Access(path.clone()),
 			ast::ExprKind::Literal(lit, ident) => ExprKind::Literal(*lit, *ident),
 
 			ast::ExprKind::Paren(expr) => self.lower_expr(expr).kind,
@@ -230,6 +309,13 @@ impl Lowerer<'_> {
 				cond: Box::new(self.lower_expr(cond)),
 				conseq: Box::new(self.lower_block(conseq)),
 				altern: altern.as_ref().map(|a| Box::new(self.lower_block(a))),
+			},
+
+			ast::ExprKind::Deref(expr) => ExprKind::Deref(Box::new(self.lower_expr(expr))),
+
+			ast::ExprKind::Assign { target, value } => ExprKind::Assign {
+				target: Box::new(self.lower_expr(target)),
+				value: Box::new(self.lower_expr(value)),
 			},
 
 			ast::ExprKind::Return(expr) => {

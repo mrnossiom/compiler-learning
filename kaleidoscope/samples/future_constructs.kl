@@ -24,7 +24,10 @@ fn main() {
 	in stmts for stmt { }
 	in stmts the stmt { }
 	for stmts each stmt { /* snip */ }
-	all stmts be stmt {}
+	for stmts be stmt { }
+	all stmts be stmt { }
+
+	for Struct impl Trait { }
 
 	cst og_num = 10;
 	var myref = &og_num;

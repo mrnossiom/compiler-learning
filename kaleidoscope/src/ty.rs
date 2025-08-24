@@ -101,7 +101,7 @@ impl TyCtx<'_> {
 
 	fn lower_ty(&self, ty: &ast::Ty) -> TyKind<Infer> {
 		match &ty.kind {
-			ast::TyKind::Path(path, _generics) => self.lower_path_ty(path[0]),
+			ast::TyKind::Path(path) => self.lower_path_ty(path),
 			ast::TyKind::Pointer(ty) => TyKind::Pointer(Box::new(self.lower_ty(ty))),
 			ast::TyKind::Unit => TyKind::Primitive(PrimitiveKind::Void),
 			ast::TyKind::Infer => TyKind::Infer(self.next_infer_tag(), Infer::Explicit),
@@ -114,15 +114,15 @@ impl TyCtx<'_> {
 		let inputs = decl
 			.inputs
 			.iter()
-			.map(|(ident, ty)| {
+			.map(|ast::Param { name, ty }| {
 				let ty = if let Ok(ty) = self.lower_ty(ty).as_no_infer() {
 					ty
 				} else {
-					let report = errors::ty::function_cannot_infer_signature(ident.span);
+					let report = errors::ty::function_cannot_infer_signature(name.span);
 					self.scx.dcx().emit_build(report);
 					TyKind::Error
 				};
-				Param { ident: *ident, ty }
+				Param { name: *name, ty }
 			})
 			.collect();
 
@@ -136,8 +136,13 @@ impl TyCtx<'_> {
 		FnDecl { inputs, output: ty }
 	}
 
-	fn lower_path_ty(&self, path: ast::Ident) -> TyKind<Infer> {
-		match self.scx.symbols.resolve(path.name).as_str() {
+	fn lower_path_ty(&self, path: &ast::Path) -> TyKind<Infer> {
+		// TODO: remove these constraints
+		assert_eq!(path.segments.len(), 1);
+		assert_eq!(path.generics.len(), 0);
+
+		let path = path.segments[0];
+		match self.scx.symbols.resolve(path.sym).as_str() {
 			"_" => TyKind::Infer(self.next_infer_tag(), Infer::Explicit),
 
 			"void" => TyKind::Primitive(PrimitiveKind::Void),
@@ -195,10 +200,13 @@ impl<'tcx> Inferer<'tcx> {
 		}
 	}
 
-	fn resolve_var_ty(&self, var: &Ident) -> TyKind<Infer> {
+	fn resolve_var_ty(&self, var: &ast::Path) -> TyKind<Infer> {
+		// TODO: resolve full path
+		let var = var.segments[0];
+
 		if let Some(ty) = self
 			.local_env
-			.get(&var.name)
+			.get(&var.sym)
 			.and_then(|ty_kinds| ty_kinds.last())
 		{
 			ty.clone()
@@ -219,12 +227,15 @@ impl Inferer<'_> {
 
 		// init context with function arguments
 
-		self.decl.inputs.iter().for_each(|Param { ident, ty }| {
-			self.local_env
-				.entry(ident.name)
-				.or_default()
-				.push(ty.clone().as_infer());
-		});
+		self.decl
+			.inputs
+			.iter()
+			.for_each(|Param { name: ident, ty }| {
+				self.local_env
+					.entry(ident.sym)
+					.or_default()
+					.push(ty.clone().as_infer());
+			});
 
 		let ret_ty = self.infer_block(self.body);
 		self.unify(&self.decl.output.clone().as_infer(), &ret_ty);
@@ -256,12 +267,7 @@ impl Inferer<'_> {
 				let expr_ty = self.infer_expr(value);
 				self.unify(&explicit_ty, &expr_ty);
 
-				self.local_env.entry(ident.name).or_default().push(expr_ty);
-			}
-			hir::StmtKind::Assign { target, value } => {
-				let target_ty = self.resolve_var_ty(target);
-				let value_ty = self.infer_expr(value);
-				self.unify(&target_ty, &value_ty);
+				self.local_env.entry(ident.sym).or_default().push(expr_ty);
 			}
 			hir::StmtKind::Loop { block } => {
 				let block_ty = self.infer_block(block);
@@ -272,7 +278,7 @@ impl Inferer<'_> {
 
 	fn infer_expr(&mut self, expr: &hir::Expr) -> TyKind<Infer> {
 		let ty = match &expr.kind {
-			hir::ExprKind::Access(ident) => self.resolve_var_ty(ident),
+			hir::ExprKind::Access(path) => self.resolve_var_ty(path),
 			hir::ExprKind::Literal(lit, _ident) => match lit {
 				lexer::LiteralKind::Integer => {
 					TyKind::Infer(self.tcx.next_infer_tag(), Infer::Integer)
@@ -284,10 +290,15 @@ impl Inferer<'_> {
 			hir::ExprKind::Unary(op, expr) => {
 				let expr_ty = self.infer_expr(expr);
 
-				self.unify(&TyKind::Primitive(PrimitiveKind::Bool), &expr_ty);
-
 				match op.bit {
-					UnaryOp::Not => TyKind::Primitive(PrimitiveKind::Bool),
+					UnaryOp::Not => {
+						self.unify(&TyKind::Primitive(PrimitiveKind::Bool), &expr_ty);
+						TyKind::Primitive(PrimitiveKind::Bool)
+					}
+					UnaryOp::Minus => {
+						self.unify(&TyKind::Primitive(PrimitiveKind::UnsignedInt), &expr_ty);
+						TyKind::Primitive(PrimitiveKind::UnsignedInt)
+					}
 				}
 			}
 			hir::ExprKind::Binary(op, left, right) => {
@@ -355,6 +366,13 @@ impl Inferer<'_> {
 					});
 
 				self.unify(&conseq_ty, &altern_ty)
+			}
+
+			hir::ExprKind::Deref(expr) => todo!("ensure expr ty is pointer"),
+			hir::ExprKind::Assign { target, value } => {
+				let target_ty = self.resolve_var_ty(todo!());
+				let value_ty = self.infer_expr(value);
+				self.unify(&target_ty, &value_ty);
 			}
 
 			hir::ExprKind::Return(_) | hir::ExprKind::Break(_) | hir::ExprKind::Continue => {
@@ -432,7 +450,7 @@ impl Inferer<'_> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
-	pub ident: ast::Ident,
+	pub name: ast::Ident,
 	pub ty: TyKind,
 }
 
@@ -593,11 +611,7 @@ impl TbirBuilder<'_> {
 				ty: _,
 				value,
 			} => tbir::StmtKind::Let {
-				ident: *ident,
-				value: self.build_expr(value),
-			},
-			hir::StmtKind::Assign { target, value } => tbir::StmtKind::Assign {
-				target: *target,
+				name: *ident,
 				value: self.build_expr(value),
 			},
 			hir::StmtKind::Loop { block } => tbir::StmtKind::Loop {
@@ -613,7 +627,7 @@ impl TbirBuilder<'_> {
 
 	fn build_expr(&self, expr: &hir::Expr) -> tbir::Expr {
 		let kind = match &expr.kind {
-			hir::ExprKind::Access(ident) => tbir::ExprKind::Access(*ident),
+			hir::ExprKind::Access(path) => tbir::ExprKind::Access(path.clone()),
 			hir::ExprKind::Literal(kind, sym) => tbir::ExprKind::Literal(*kind, *sym),
 
 			hir::ExprKind::Unary(op, expr) => {
@@ -642,6 +656,10 @@ impl TbirBuilder<'_> {
 					.as_ref()
 					.map(|altern| Box::new(self.build_block(altern))),
 			},
+
+			hir::ExprKind::Deref(expr) => todo!(),
+			hir::ExprKind::Assign { target, value } => todo!(),
+
 			hir::ExprKind::Return(expr) => {
 				tbir::ExprKind::Return(expr.as_ref().map(|expr| Box::new(self.build_expr(expr))))
 			}

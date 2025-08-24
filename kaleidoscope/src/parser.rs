@@ -1,6 +1,6 @@
 //! Tokens to AST parsing logic
 
-use std::mem;
+use std::{fmt, mem};
 
 use ariadne::{Label, Report, ReportKind};
 
@@ -20,7 +20,7 @@ macro_rules! fn_name {
 
 macro_rules! debug_parser {
 	($self:expr) => {
-		tracing::trace!(current_kind = ?$self.token.kind, "{:<30}", fn_name!());
+		tracing::trace!(tkn = ?$self.token, "{:<30}", fn_name!());
 	}
 }
 
@@ -30,15 +30,22 @@ use crate::lexer::{
 };
 use crate::{
 	ast::{
-		Block, Expr, ExprKind, FnDecl, Ident, Item, ItemKind, NodeId, Root, Spanned, Stmt,
-		StmtKind, Ty, TyKind,
+		Block, Expr, ExprKind, FieldDef, FnDecl, Function, Ident, Item, ItemKind, NodeId, Param,
+		Path, Root, Spanned, Stmt, StmtKind, TraitItem, TraitItemKind, Ty, TyKind, Type, Variant,
+		VariantKind,
 	},
 	bug, errors,
-	lexer::{Delimiter, Lexer, Token, TokenKind},
-	session::{Diagnostic, SessionCtx, SourceFile},
+	lexer::{BinaryOp, Delimiter, Lexer, Token, TokenKind},
+	session::{Diagnostic, SessionCtx, SourceFile, Span},
 };
 
 pub type PResult<T> = Result<T, Diagnostic>;
+
+#[derive(Debug)]
+enum AssocOp {
+	Binary(BinaryOp),
+	Assign,
+}
 
 pub struct Parser<'scx> {
 	scx: &'scx SessionCtx,
@@ -73,9 +80,8 @@ impl<'scx> Parser<'scx> {
 
 /// Helper methods
 impl Parser<'_> {
-	fn bump(&mut self) -> Token {
+	fn bump(&mut self) {
 		self.last_token = mem::replace(&mut self.token, self.lexer.next().unwrap_or(Token::DUMMY));
-		self.token
 	}
 
 	fn check(&self, token: TokenKind) -> bool {
@@ -117,24 +123,42 @@ impl Parser<'_> {
 		})
 	}
 
-	fn parse_seq<T>(
+	fn close_span(&self, start: Span) -> Span {
+		start.to(self.last_token.span)
+	}
+
+	fn parse_seq<T: fmt::Debug>(
 		&mut self,
 		delim: Delimiter,
 		separator: TokenKind,
-		mut p_elem: impl FnMut(&mut Self) -> PResult<T>,
-	) -> PResult<Vec<T>> {
-		let mut finished = false;
+		mut parse: impl FnMut(&mut Self) -> PResult<T>,
+	) -> PResult<(Vec<T>, Span)> {
+		let lo = self.token.span;
 
+		let mut finished = false;
 		let mut seq = Vec::new();
 
 		self.expect(Open(delim))?;
 		while !self.eat(Close(delim)) && !finished {
-			seq.push(p_elem(self)?);
+			seq.push(parse(self)?);
 
 			// no comma means no item left
 			finished = !self.eat(separator);
 		}
-		Ok(seq)
+
+		Ok((seq, self.close_span(lo)))
+	}
+
+	fn parse_while<T>(
+		&mut self,
+		end: TokenKind,
+		mut parse: impl FnMut(&mut Self) -> PResult<T>,
+	) -> PResult<Vec<T>> {
+		let mut many = Vec::new();
+		while !self.eat(end) {
+			many.push(parse(self)?);
+		}
+		Ok(many)
 	}
 
 	/// Looks one token ahead
@@ -154,173 +178,241 @@ impl Parser<'_> {
 
 /// Expressions
 impl Parser<'_> {
+	/// Parse an expression
 	fn parse_expr(&mut self) -> PResult<Expr> {
 		debug_parser!(self);
 
 		let lhs = self.parse_expr_single_and_postfix()?;
-		self.parse_binop_rhs(0, lhs)
+		self.parse_expr_assoc_rest(None, lhs)
 	}
 
-	fn parse_binop_rhs(&mut self, precedence: u32, mut lhs: Expr) -> PResult<Expr> {
+	/// Parse an expression right-hand side by eating association operators
+	/// (e.g. binary operators or assignment equal) while their precedence is higher.
+	fn parse_expr_assoc_rest(&mut self, precedence: Option<u32>, mut lhs: Expr) -> PResult<Expr> {
 		debug_parser!(self);
 
 		let lo = self.token.span;
 
-		while let BinaryOp(binop) = self.token.kind
-			&& binop.precedence() >= precedence
-		{
-			let binop_span = self.token.span;
-			self.bump();
-			let rhs = self.parse_expr()?;
-			lhs = Expr {
-				kind: ExprKind::Binary {
-					op: Spanned::new(binop, binop_span),
-					left: Box::new(lhs),
-					right: Box::new(rhs),
+		while let Some(assoc_op) = self.eat_assoc_token_with_precedence(precedence) {
+			let left = Box::new(lhs);
+			let right = Box::new(self.parse_expr()?);
+
+			let new_kind = match assoc_op.bit {
+				AssocOp::Binary(bin_op) => ExprKind::Binary {
+					op: Spanned::new(bin_op, assoc_op.span),
+					left,
+					right,
 				},
-				span: lo.to(self.last_token.span),
+				AssocOp::Assign => ExprKind::Assign {
+					target: left,
+					value: right,
+				},
+			};
+
+			lhs = Expr {
+				kind: new_kind,
+				span: self.close_span(lo),
 				id: self.make_node_id(),
 			};
 		}
 		Ok(lhs)
 	}
 
+	fn eat_assoc_token_with_precedence(
+		&mut self,
+		precedence: Option<u32>,
+	) -> Option<Spanned<AssocOp>> {
+		if let BinaryOp(bin_op) = self.token.kind
+			&& precedence.is_none_or(|prec| prec <= bin_op.precedence())
+		{
+			self.bump();
+			Some(Spanned::new(AssocOp::Binary(bin_op), self.last_token.span))
+		} else if precedence.is_none_or(|prec| prec == 0) && self.eat(Eq) {
+			Some(Spanned::new(AssocOp::Assign, self.last_token.span))
+		} else {
+			None
+		}
+	}
+
+	/// Parse a single expression with postfix constructs
 	fn parse_expr_single_and_postfix(&mut self) -> PResult<Expr> {
 		debug_parser!(self);
 
 		let mut expr = self.parse_expr_single()?;
 
-		// check for postfix things like `f()`
-		expr = match self.token.kind {
-			Dot => {
-				self.bump();
-				match self.token.kind {
-					Ident(_) => todo!("parse member access"),
-					BinaryOp(Mul) => todo!("parse deref"),
-					_ => todo!("unexpected"),
+		// check for postfix constructs
+		expr = if self.eat(Dot) {
+			if matches!(self.token.kind, Ident(_)) {
+				// `<expr> . foo`
+				todo!("parse member access")
+			} else if self.eat(BinaryOp(Mul)) {
+				// `<expr> . *`
+				Expr {
+					span: self.close_span(expr.span),
+					kind: ExprKind::Deref(Box::new(expr)),
+					id: self.make_node_id(),
 				}
+			} else {
+				todo!("unexpected")
 			}
-
-			Open(Paren) => self.parse_fn_call(expr)?,
-			_ => expr,
+		} else if self.check(Open(Paren)) {
+			// `<expr> ()`
+			self.parse_fn_call(expr)?
+		} else {
+			expr
 		};
 
 		Ok(expr)
 	}
 
-	/// Parse a single expression without trying to link them using binary operators
+	/// Parse a single expression without eating binary operators
+	///
+	/// See [`Self::parse_expr`] for full expression parsing including binary operations
 	fn parse_expr_single(&mut self) -> PResult<Expr> {
 		debug_parser!(self);
 
 		let lo = self.token.span;
-		let kind = match self.token.kind {
-			// prefix
-			UnaryOp(Not) => self.parse_expr_not()?,
 
-			Open(Paren) => self.parse_expr_paren()?,
-			TokenKind::Ident(_) => self.parse_expr_access()?,
-			Literal(kind, symbol) => {
-				self.bump();
-				match kind {
-					Integer => ExprKind::Literal(Integer, symbol),
-					Float => ExprKind::Literal(Float, symbol),
-					// handle prefixed strings (e.g. c"content")
-					Str => ExprKind::Literal(Str, symbol),
-				}
-			}
-			Keyword(If) => self.parse_expr_if()?,
-			// TODO: make loops be expressions
-			// Keyword(While) => self.parse_while_stmt()?,
-			Keyword(Return) => self.parse_expr_return()?,
-			Keyword(Break) => self.parse_expr_break()?,
-			Keyword(Continue) => self.parse_expr_continue()?,
-
-			_ => {
-				let report =
-					errors::parser::expected_construct_no_match("an expression", self.token.span);
-				return Err(Diagnostic::new(report));
-			}
+		let kind = if self.eat(UnaryOp(Not)) {
+			self.parse_expr_not()?
+		} else if self.eat(BinaryOp(BinaryOp::Minus)) {
+			self.parse_expr_neg()?
+		} else if matches!(self.token.kind, TokenKind::Ident(_)) {
+			self.parse_expr_access()?
+		} else if matches!(self.token.kind, Literal(_, _)) {
+			self.parse_expr_literal()
+		} else if self.eat(Open(Paren)) {
+			self.parse_expr_paren()?
+		} else if self.eat(Keyword(If)) {
+			self.parse_expr_if()?
+		}
+		// TODO: make loops be expressions
+		// else if self.eat(Keyword(While) {
+		// 	self.parse_expr_while()?
+		// }
+		else if self.eat(Keyword(Return)) {
+			self.parse_expr_return()?
+		} else if self.eat(Keyword(Break)) {
+			self.parse_expr_break()?
+		} else if self.eat(Keyword(Continue)) {
+			self.parse_expr_continue()?
+		} else {
+			let report = errors::parser::expected_construct_no_match("an expression", self.token);
+			return Err(Diagnostic::new(report));
 		};
+
 		Ok(Expr {
 			kind,
-			span: lo.to(self.last_token.span),
+			span: self.close_span(lo),
 			id: self.make_node_id(),
 		})
 	}
 
+	/// `! <expr>`
 	fn parse_expr_not(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
-
-		self.expect(UnaryOp(Not))?;
-		let span = self.last_token.span;
+		debug_assert_eq!(self.last_token.kind, UnaryOp(Not));
 
 		let expr = Box::new(self.parse_expr()?);
 
-		Ok(ExprKind::Unary {
-			op: Spanned::new(Not, span),
-			expr,
-		})
+		let op = Spanned::new(Not, self.last_token.span);
+		Ok(ExprKind::Unary { op, expr })
 	}
 
-	fn parse_expr_paren(&mut self) -> PResult<ExprKind> {
+	/// `- <expr>`
+	fn parse_expr_neg(&mut self) -> PResult<ExprKind> {
+		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, BinaryOp(BinaryOp::Minus));
+
+		let expr = Box::new(self.parse_expr()?);
+
+		let op = Spanned::new(Not, self.last_token.span);
+		Ok(ExprKind::Unary { op, expr })
+	}
+
+	fn parse_expr_literal(&mut self) -> ExprKind {
+		debug_parser!(self);
+		assert!(matches!(self.token.kind, TokenKind::Literal(_, _)));
+
+		let TokenKind::Literal(kind, sym) = self.token.kind else {
+			bug!("should be called when on a literal");
+		};
+		self.bump();
+
+		match kind {
+			Integer => ExprKind::Literal(Integer, sym),
+			Float => ExprKind::Literal(Float, sym),
+			// handle prefixed strings (e.g. c"content")
+			Str => ExprKind::Literal(Str, sym),
+		}
+	}
+
+	/// `<ident>`
+	fn parse_expr_access(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
 
-		self.expect(Open(Paren))?;
+		let path = self.parse_path()?;
+
+		Ok(ExprKind::Access(path))
+	}
+
+	/// `( <expr> )`
+	fn parse_expr_paren(&mut self) -> PResult<ExprKind> {
+		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Open(Paren));
+
 		let expr = Box::new(self.parse_expr()?);
 		self.expect(Close(Paren))?;
 
 		Ok(ExprKind::Paren(expr))
 	}
 
-	fn parse_expr_access(&mut self) -> PResult<ExprKind> {
-		debug_parser!(self);
-
-		let ident = self.expect_ident()?;
-		Ok(ExprKind::Access(ident))
-	}
-
+	/// `if <expr> <block> [ else <block> ]`
 	fn parse_expr_if(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Keyword(If));
 
-		self.expect(Keyword(If))?;
-		let cond = self.parse_expr()?;
-		let conseq = self.parse_block()?;
+		let cond = Box::new(self.parse_expr()?);
+		let conseq = Box::new(self.parse_block()?);
 		let altern = if self.eat(Keyword(Else)) {
-			Some(self.parse_block()?)
+			Some(Box::new(self.parse_block()?))
 		} else {
 			None
 		};
 
 		Ok(ExprKind::If {
-			cond: Box::new(cond),
-			conseq: Box::new(conseq),
-			altern: altern.map(Box::new),
+			cond,
+			conseq,
+			altern,
 		})
 	}
 
+	/// `return <expr>`
 	fn parse_expr_return(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
-
-		self.expect(Keyword(Return))?;
+		debug_assert_eq!(self.last_token.kind, Keyword(Return));
 
 		// TODO: bad for recovery
-		let expr = self.parse_expr().ok();
+		let expr = self.parse_expr().ok().map(Box::new);
 
-		Ok(ExprKind::Return(expr.map(Box::new)))
+		Ok(ExprKind::Return(expr))
 	}
 
+	/// `break [ <label> ] <expr>`
 	fn parse_expr_break(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Keyword(Break));
 
-		self.expect(Keyword(Break))?;
-		let expr = self.parse_expr().ok();
-		Ok(ExprKind::Break(expr.map(Box::new)))
+		let expr = self.parse_expr().ok().map(Box::new);
+
+		Ok(ExprKind::Break(expr))
 	}
 
+	/// `continue [ <label> ]`
 	fn parse_expr_continue(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Keyword(Continue));
 
-		self.expect(Keyword(Continue))?;
 		Ok(ExprKind::Continue)
 	}
 }
@@ -330,96 +422,325 @@ impl Parser<'_> {
 	pub fn parse_root(&mut self) -> PResult<Root> {
 		debug_parser!(self);
 
-		let mut items = Vec::new();
-		while self.token.kind != Eof {
-			items.push(self.parse_item()?);
-		}
+		let items = self.parse_while(Eof, Self::parse_item)?;
+
 		Ok(Root { items })
 	}
 
+	/// Parse [`Item`]
 	fn parse_item(&mut self) -> PResult<Item> {
 		debug_parser!(self);
 
 		let lo = self.token.span;
-		let kind = match self.token.kind {
-			Keyword(Fn) => self.parse_item_fn()?,
-			Keyword(Extern) => self.parse_item_extern()?,
 
-			_ => {
-				let report =
-					errors::parser::expected_construct_no_match("an item", self.token.span);
-				return Err(Diagnostic::new(report));
-			}
+		let kind = if self.eat(Keyword(Fn)) {
+			ItemKind::Function(self.parse_item_fn()?)
+		} else if self.eat(Keyword(Extern)) {
+			self.parse_item_extern()?
+		} else if self.eat(Keyword(Struct)) {
+			self.parse_item_struct()?
+		} else if self.eat(Keyword(Enum)) {
+			self.parse_item_enum()?
+		} else if self.eat(Keyword(Trait)) {
+			self.parse_item_trait()?
+		} else if self.eat(Keyword(For)) {
+			self.parse_item_trait_impl()?
+		} else if self.eat(Keyword(Type)) {
+			self.parse_item_type()?
+		} else {
+			let report = errors::parser::expected_construct_no_match("an item", self.token);
+			return Err(Diagnostic::new(report));
 		};
+
 		Ok(Item {
 			kind,
-			span: lo.to(self.last_token.span),
+			span: self.close_span(lo),
 			id: self.make_node_id(),
 		})
 	}
 
-	fn parse_item_fn(&mut self) -> PResult<ItemKind> {
+	/// Parse [`ItemKind::Function`]
+	fn parse_item_fn(&mut self) -> PResult<Function> {
 		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Keyword(Fn));
 
-		self.expect(Keyword(Fn))?;
-		let (ident, decl) = self.parse_fn_decl()?;
-		let body = Box::new(self.parse_block()?);
-		Ok(ItemKind::Function { ident, decl, body })
+		let (name, decl) = self.parse_fn_decl()?;
+		let body = if self.check(Open(Brace)) {
+			Some(Box::new(self.parse_block()?))
+		} else if self.eat(Semi) {
+			None
+		} else {
+			panic!("{:?}", self.token)
+		};
+
+		Ok(Function {
+			name,
+			decl,
+			body,
+			externess: None,
+		})
 	}
 
+	/// Parse [`ItemKind::Function`] with [`ItemKind::Function::externess`] set to some ABI.
 	fn parse_item_extern(&mut self) -> PResult<ItemKind> {
 		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Keyword(Extern));
 
-		self.expect(Keyword(Extern))?;
+		let abi = self.parse_expr()?;
 		self.expect(Keyword(Fn))?;
-		let (ident, decl) = self.parse_fn_decl()?;
-		self.expect(Semi)?;
-		Ok(ItemKind::Extern { ident, decl })
+		let mut func = self.parse_item_fn()?;
+
+		func.externess = Some(abi);
+
+		Ok(ItemKind::Function(func))
+	}
+
+	/// Parse [`ItemKind::Struct`]
+	fn parse_item_struct(&mut self) -> PResult<ItemKind> {
+		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Keyword(Struct));
+
+		let name = self.expect_ident()?;
+		let generics = self.parse_generics_def()?;
+		let fields = if self.check(Open(Brace)) {
+			let (fields, _) = self.parse_seq(Brace, Comma, Self::parse_field_def)?;
+			fields
+		} else if self.check(Open(Paren)) {
+			let (fields, _) = self.parse_seq(Paren, Comma, Self::parse_ty)?;
+
+			fields
+				.into_iter()
+				.enumerate()
+				.map(|(i, ty)| FieldDef {
+					name: Ident::new(self.scx.symbols.intern(&i.to_string()), ty.span),
+					span: ty.span,
+					ty,
+				})
+				.collect()
+		} else if self.eat(Semi) {
+			Vec::new()
+		} else {
+			panic!("{}", self.token.kind)
+		};
+
+		Ok(ItemKind::Struct {
+			name,
+			generics,
+			fields,
+		})
+	}
+
+	/// Parse [`ItemKind::Enum`]
+	fn parse_item_enum(&mut self) -> PResult<ItemKind> {
+		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Keyword(Enum));
+
+		let name = self.expect_ident()?;
+		let generics = self.parse_generics_def()?;
+		let (variants, _) = self.parse_seq(Brace, Comma, Self::parse_variant_def)?;
+
+		Ok(ItemKind::Enum {
+			name,
+			generics,
+			variants,
+		})
+	}
+
+	/// Parse [`ItemKind::Trait`]
+	fn parse_item_trait(&mut self) -> PResult<ItemKind> {
+		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Keyword(Trait));
+
+		let name = self.expect_ident()?;
+		let generics = self.parse_generics_def()?;
+
+		self.expect(Open(Brace))?;
+		let members = self.parse_while(Close(Brace), Self::parse_trait_member)?;
+
+		Ok(ItemKind::Trait {
+			name,
+			generics,
+			members,
+		})
+	}
+
+	/// Parse [`ItemKind::TraitImpl`]
+	fn parse_item_trait_impl(&mut self) -> PResult<ItemKind> {
+		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Keyword(For));
+
+		let type_ = self.parse_path()?;
+		self.expect(Keyword(Impl))?;
+		let trait_ = self.parse_path()?;
+		self.expect(Open(Brace))?;
+		let members = self.parse_while(Close(Brace), Self::parse_trait_member)?;
+
+		Ok(ItemKind::TraitImpl {
+			type_,
+			trait_,
+			members,
+		})
+	}
+
+	/// Parse [`ItemKind::Type`]
+	fn parse_item_type(&mut self) -> PResult<ItemKind> {
+		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Keyword(Type));
+
+		let name = self.expect_ident()?;
+		let alias = if self.eat(Eq) {
+			let ty = Some(Box::new(self.parse_ty()?));
+			self.expect(Semi)?;
+			ty
+		} else if self.eat(Semi) {
+			None
+		} else {
+			let report =
+				errors::parser::expected_construct_no_match("a type alias body", self.token);
+			return Err(Diagnostic::new(report));
+		};
+
+		Ok(ItemKind::Type(Type { name, alias }))
+	}
+
+	/// Parse [`FieldDef`]
+	fn parse_field_def(&mut self) -> PResult<FieldDef> {
+		debug_parser!(self);
+
+		let lo = self.token.span;
+
+		let name = self.expect_ident()?;
+		self.expect(Colon)?;
+		let ty = self.parse_ty()?;
+
+		Ok(FieldDef {
+			name,
+			ty,
+			span: self.close_span(lo),
+		})
+	}
+
+	/// Parse [`Variant`] and [`VariantKind`]
+	fn parse_variant_def(&mut self) -> PResult<Variant> {
+		debug_parser!(self);
+
+		let lo = self.token.span;
+
+		let name = self.expect_ident()?;
+
+		let fields = if self.check(Open(Brace)) {
+			let (fields, _) = self.parse_seq(Brace, Comma, Self::parse_field_def)?;
+			VariantKind::Struct(fields)
+		} else if self.check(Open(Paren)) {
+			let (fields, _) = self.parse_seq(Paren, Comma, Self::parse_ty)?;
+			VariantKind::Tuple(fields)
+		} else {
+			VariantKind::Bare
+		};
+
+		Ok(Variant {
+			name,
+			kind: fields,
+			span: self.close_span(lo),
+		})
+	}
+
+	/// Parse [`TraitItem`]
+	fn parse_trait_member(&mut self) -> PResult<TraitItem> {
+		debug_parser!(self);
+
+		let item = self.parse_item()?;
+
+		let kind = match item.kind {
+			ItemKind::Type(type_) => TraitItemKind::Type(type_),
+			ItemKind::Function(func) => TraitItemKind::Function(func),
+			_ => panic!(),
+		};
+
+		Ok(TraitItem {
+			kind,
+			span: item.span,
+		})
 	}
 
 	fn parse_fn_decl(&mut self) -> PResult<(Ident, FnDecl)> {
 		debug_parser!(self);
 
 		let name = self.expect_ident()?;
-		let decl_lo = self.token.span;
-		let args = self.parse_seq(Paren, Comma, Parser::parse_argument)?;
-		let ret_ty = if !self.check(Open(Brace)) && !self.check(Semi) {
+		let (params, span) = self.parse_seq(Paren, Comma, Parser::parse_param)?;
+		let ret = if !self.check(Open(Brace)) && !self.check(Semi) {
 			Some(self.parse_ty()?)
 		} else {
 			None
 		};
-		Ok((
-			name,
-			FnDecl {
-				args,
-				ret: ret_ty,
-				span: decl_lo.to(self.last_token.span),
-			},
-		))
+
+		Ok((name, FnDecl { params, ret, span }))
 	}
 
-	fn parse_argument(&mut self) -> PResult<(Ident, Ty)> {
+	fn parse_param(&mut self) -> PResult<Param> {
 		debug_parser!(self);
 
 		let name = self.expect_ident()?;
 		self.expect(Colon)?;
 		let ty = self.parse_ty()?;
-		Ok((name, ty))
+		Ok(Param { name, ty })
+	}
+
+	fn parse_path(&mut self) -> PResult<Path> {
+		debug_parser!(self);
+
+		let mut segments = Vec::new();
+		segments.push(self.expect_ident()?);
+
+		while self.eat(PathSep) {
+			segments.push(self.expect_ident()?);
+		}
+
+		let generics = if self.check(BinaryOp(Lt)) {
+			self.parse_ty_generics()?
+		} else {
+			Vec::new()
+		};
+
+		Ok(Path { segments, generics })
+	}
+
+	fn parse_generics_def(&mut self) -> PResult<Vec<Ident>> {
+		if !self.check(BinaryOp(Lt)) {
+			return Ok(vec![]);
+		}
+
+		// TODO: this is a modified expansion of
+		// let (generics, span) = self.parse_seq(Angled, Comma, Self::expect_ident)?;
+
+		let mut finished = false;
+		let mut generics = Vec::new();
+
+		self.expect(BinaryOp(Lt))?;
+		while !self.eat(BinaryOp(Gt)) && !finished {
+			generics.push(self.expect_ident()?);
+
+			// no comma means no item left
+			finished = !self.eat(Comma);
+		}
+
+		Ok(generics)
 	}
 
 	fn parse_fn_call(&mut self, expr: Expr) -> PResult<Expr> {
 		debug_parser!(self);
 
-		let lo = self.token.span;
-		let expr_span = expr.span;
-		let args = self.parse_seq(Paren, Comma, Parser::parse_expr)?;
+		let lo = expr.span;
+
+		let (args, span) = self.parse_seq(Paren, Comma, Parser::parse_expr)?;
+
 		let expr_kind = ExprKind::FnCall {
 			expr: Box::new(expr),
-			args: Spanned::new(args, lo.to(self.last_token.span)),
+			args: Spanned::new(args, span),
 		};
 		Ok(Expr {
 			kind: expr_kind,
-			span: expr_span.to(self.last_token.span),
+			span: self.close_span(lo),
 			id: self.make_node_id(),
 		})
 	}
@@ -434,7 +755,7 @@ impl Parser<'_> {
 			Ident(_) => self.parse_ty_path(),
 			Ampersand => self.parse_ty_pointer(),
 			_ => {
-				let report = errors::parser::expected_construct_no_match("a type", self.token.span);
+				let report = errors::parser::expected_construct_no_match("a type", self.token);
 				Err(Diagnostic::new(report))
 			}
 		}
@@ -444,27 +765,15 @@ impl Parser<'_> {
 		debug_parser!(self);
 
 		let lo = self.token.span;
-
-		let mut path = Vec::new();
-		path.push(self.expect_ident()?);
-
-		while self.token.kind == Dot {
-			self.bump();
-			path.push(self.expect_ident()?);
-		}
-
-		let generics = if self.token.kind == BinaryOp(Lt) {
-			Some(self.parse_ty_generics()?)
-		} else {
-			None
-		};
+		let path = self.parse_path()?;
 
 		Ok(Ty {
-			kind: TyKind::Path(path, generics),
-			span: lo.to(self.last_token.span),
+			kind: TyKind::Path(path),
+			span: self.close_span(lo),
 		})
 	}
 
+	/// `& <ty>`
 	fn parse_ty_pointer(&mut self) -> PResult<Ty> {
 		debug_parser!(self);
 
@@ -475,10 +784,11 @@ impl Parser<'_> {
 
 		Ok(Ty {
 			kind: TyKind::Pointer(ty),
-			span: lo.to(self.last_token.span),
+			span: self.close_span(lo),
 		})
 	}
 
+	/// `\< <ty>,* \>`
 	fn parse_ty_generics(&mut self) -> PResult<Vec<Ty>> {
 		debug_parser!(self);
 
@@ -514,7 +824,6 @@ impl Parser<'_> {
 
 			Keyword(Var) => self.parse_stmt_var()?,
 			Keyword(Cst) => self.parse_stmt_var()?,
-			TokenKind::Ident(_) if self.look_ahead() == Eq => self.parse_stmt_assign()?,
 
 			Eof => {
 				let report = Report::build(ReportKind::Error, self.token.span)
@@ -534,7 +843,7 @@ impl Parser<'_> {
 		};
 		Ok(Stmt {
 			kind,
-			span: lo.to(self.last_token.span),
+			span: self.close_span(lo),
 			id: self.make_node_id(),
 		})
 	}
@@ -560,7 +869,7 @@ impl Parser<'_> {
 		debug_parser!(self);
 
 		self.expect(Keyword(Var))?;
-		let ident = self.expect_ident()?;
+		let name = self.expect_ident()?;
 
 		// definition with optional ty
 		let ty = if self.eat(Colon) {
@@ -574,21 +883,7 @@ impl Parser<'_> {
 		let value = Box::new(self.parse_expr()?);
 		self.expect(Semi)?;
 
-		Ok(StmtKind::Let { ident, ty, value })
-	}
-
-	fn parse_stmt_assign(&mut self) -> PResult<StmtKind> {
-		debug_parser!(self);
-
-		let ident = self.expect_ident()?;
-		self.expect(Eq)?;
-
-		let value = Box::new(self.parse_expr()?);
-		self.expect(Semi)?;
-		Ok(StmtKind::Assign {
-			target: ident,
-			value,
-		})
+		Ok(StmtKind::Let { name, ty, value })
 	}
 }
 
@@ -602,9 +897,10 @@ impl Parser<'_> {
 		while !self.eat(Close(Brace)) {
 			stmts.push(self.parse_stmt()?);
 		}
+
 		Ok(Block {
 			stmts,
-			span: lo.to(self.last_token.span),
+			span: self.close_span(lo),
 			id: self.make_node_id(),
 		})
 	}

@@ -35,11 +35,13 @@ impl Token {
 			(BinaryOp(Gt), Eq) => BinaryOp(Ge),
 			(BinaryOp(Lt), Eq) => BinaryOp(Le),
 
-			(BinaryOp(Minus), BinaryOp(Lt)) => Arrow,
+			(BinaryOp(BinaryOp::Minus), BinaryOp(Lt)) => Arrow,
 			(UnaryOp(Not), Eq) => BinaryOp(Ne),
 
 			(BinaryOp(Lt), BinaryOp(Lt)) => BinaryOp(Shl),
 			(BinaryOp(Gt), BinaryOp(Gt)) => BinaryOp(Shr),
+
+			(Colon, Colon) => PathSep,
 
 			(Ampersand, Ampersand) => todo!("for recovery, see `and` kw"),
 			(BinaryOp(Or), BinaryOp(Or)) => todo!("for recovery, see `or` kw"),
@@ -83,6 +85,9 @@ pub enum TokenKind {
 	/// `=`
 	Eq,
 
+	/// `::`
+	PathSep,
+
 	Unknown,
 
 	/// Used to reduce boilerplate with Option
@@ -112,6 +117,8 @@ impl fmt::Display for TokenKind {
 
 			Eq => write!(f, "an assign sign"),
 
+			PathSep => write!(f, "a path separator"),
+
 			Unknown => write!(f, "an unknown token"),
 			Eof => write!(f, "the end of the file"),
 		}
@@ -139,7 +146,13 @@ impl fmt::Display for LiteralKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
 	Fn,
+	Type,
 	Extern,
+	Struct,
+	Enum,
+	Trait,
+	For,
+	Impl,
 
 	Var,
 	Cst,
@@ -150,8 +163,6 @@ pub enum Keyword {
 
 	Loop,
 	While,
-	In,
-	For,
 
 	Return,
 	Break,
@@ -183,6 +194,10 @@ impl fmt::Display for Delimiter {
 pub enum UnaryOp {
 	/// `!`
 	Not,
+	// TODO: dissociate lexer token kind from ast constructs, too much tokens are
+	// not reachable.
+	/// `-`
+	Minus,
 }
 
 impl fmt::Display for UnaryOp {
@@ -190,6 +205,7 @@ impl fmt::Display for UnaryOp {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Not => write!(f, "a negate sign"),
+			UnaryOp::Minus => write!(f, "an oppsite sign"),
 		}
 	}
 }
@@ -245,7 +261,7 @@ impl fmt::Display for BinaryOp {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Plus => write!(f, "a plus operator"),
-			Minus => write!(f, "a minus operator"),
+			BinaryOp::Minus => write!(f, "a minus operator"),
 			Mul => write!(f, "a multiplication operator"),
 			Div => write!(f, "a division operator"),
 			Mod => write!(f, "a modulo operator"),
@@ -358,7 +374,13 @@ impl Lexer<'_, '_> {
 					// TODO: make kw an symbol wrapper with preinterned value
 					match self.str_from(start) {
 						"fn" => Keyword(Fn),
+						"type" => Keyword(Type),
 						"extern" => Keyword(Extern),
+						"struct" => Keyword(Struct),
+						"enum" => Keyword(Enum),
+						"trait" => Keyword(Trait),
+						"for" => Keyword(For),
+						"impl" => Keyword(Impl),
 
 						"var" => Keyword(Var),
 						"cst" => Keyword(Cst),
@@ -369,8 +391,6 @@ impl Lexer<'_, '_> {
 
 						"loop" => Keyword(Loop),
 						"while" => Keyword(While),
-						"in" => Keyword(In),
-						"for" => Keyword(For),
 
 						"return" => Keyword(Return),
 						"break" => Keyword(Break),
@@ -431,7 +451,7 @@ impl Lexer<'_, '_> {
 				'}' => Close(Brace),
 
 				'+' => BinaryOp(Plus),
-				'-' => BinaryOp(Minus),
+				'-' => BinaryOp(BinaryOp::Minus),
 				'*' => BinaryOp(Mul),
 				'/' => match self.first() {
 					'/' => {

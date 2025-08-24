@@ -1,6 +1,6 @@
 // You can link any symbol from libc here
 
-extern fn putchar(c: uint);
+extern "c" fn putchar(c: uint);
 
 fn main() {
 	var n = 0;

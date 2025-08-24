@@ -1,0 +1,33 @@
+enum Option<T> {
+	Some(uint),
+	None,
+}
+
+struct Baz {
+	content: uint,
+}
+
+struct NamedTuple<T, U> {
+	foo: T,
+	bar: U,
+}
+
+enum Option { Foo, Bar }
+fn foo(option: Option) { }
+
+/*
+
+fn main() {
+	var maybe = .Some(10);
+	match maybe {
+		.Some()
+		.None => {}
+		else => {}
+	}
+
+	var baz = Baz { content: 10 };
+	var inner = baz.content;
+	var _ { content } = &baz;
+
+	foo(.Foo);
+}

@@ -10,14 +10,20 @@ pub mod parser {
 	pub fn expected_token_kind(expected: TokenKind, actual: Token) -> ReportBuilder {
 		Report::build(ReportKind::Error, actual.span)
 			.with_message(format!("expected {expected}"))
-			.with_label(Label::new(actual.span).with_message(format!("got {}", actual.kind)))
+			.with_label(
+				Label::new(actual.span)
+					.with_message(format!("found {} that was unexpected", actual.kind)),
+			)
 	}
 
 	/// Construct should fit in the sentence "expected {}"
-	pub fn expected_construct_no_match(construct: &str, token_span: Span) -> ReportBuilder {
-		Report::build(ReportKind::Error, token_span)
+	pub fn expected_construct_no_match(construct: &str, token: Token) -> ReportBuilder {
+		Report::build(ReportKind::Error, token.span)
 			.with_message(format!("expected {construct}"))
-			.with_label(Label::new(token_span).with_message("got an unexpected token".to_string()))
+			.with_label(
+				Label::new(token.span)
+					.with_message(format!("found {} that was unexpected", token.kind)),
+			)
 	}
 }
 

@@ -123,7 +123,7 @@ impl<M: Module> Generator<'_, M> {
 	pub fn lower_signature(&mut self, decl: &ty::FnDecl) -> Signature {
 		let mut signature = self.module.make_signature();
 
-		for ty::Param { ident: _, ty } in &decl.inputs {
+		for ty::Param { name: _, ty } in &decl.inputs {
 			let Some(type_) = self.to_cl_type(ty) else {
 				continue;
 			};
@@ -185,7 +185,7 @@ impl<M: Module> Generator<'_, M> {
 			.inputs
 			.iter()
 			// skip zst
-			.filter_map(|param| self.to_cl_type(&param.ty).map(|ty| (param.ident, ty)))
+			.filter_map(|param| self.to_cl_type(&param.ty).map(|ty| (param.name, ty)))
 			.collect::<Vec<_>>();
 
 		let mut builder = FunctionBuilder::new(&mut context.func, &mut self.builder_context);
@@ -202,7 +202,7 @@ impl<M: Module> Generator<'_, M> {
 			let variable = builder.declare_var(ty);
 			builder.def_var(variable, value);
 
-			values.insert(ident.name, Some(variable));
+			values.insert(ident.sym, Some(variable));
 		}
 
 		let mut generator = FunctionGenerator {
@@ -246,34 +246,44 @@ impl<M: Module> CodeGenBackend for Generator<'_, M> {
 
 		for item in &hir.items {
 			match &item.kind {
-				hir::ItemKind::Extern { ident, decl } => {
+				hir::ItemKind::Extern { name, decl, abi } => {
 					// TODO: do this elsewhere
 					let decl = self.tcx.lower_fn_decl(decl);
-					self.declare_extern(ident.name, &decl).unwrap();
+					self.declare_extern(name.sym, &decl).unwrap();
 				}
-				hir::ItemKind::Function { ident, decl, .. } => {
+				hir::ItemKind::Function {
+					name: ident, decl, ..
+				} => {
 					// TODO: do this elsewhere
 					let decl = self.tcx.lower_fn_decl(decl);
-					let func_id = self.declare_function(ident.name, &decl).unwrap();
+					let func_id = self.declare_function(ident.sym, &decl).unwrap();
 
-					function_ids.insert(ident.name, func_id);
+					function_ids.insert(ident.sym, func_id);
 				}
+
+				hir::ItemKind::Adt { .. } | hir::ItemKind::Trait { .. } => todo!(),
 			}
 		}
 		for item in &hir.items {
 			match &item.kind {
 				hir::ItemKind::Extern { .. } => {}
-				hir::ItemKind::Function { ident, decl, body } => {
+				hir::ItemKind::Function {
+					name: ident,
+					decl,
+					body,
+				} => {
 					// TODO: do this elsewhere
 					let decl = self.tcx.lower_fn_decl(decl);
 
-					let body = self.tcx.typeck_fn(*ident, &decl, body);
+					let body = self.tcx.typeck_fn(*ident, &decl, body.as_ref().unwrap());
 					if self.tcx.scx.options.print.contains(&PrintKind::TypedBodyIr) {
 						println!("{body:#?}");
 					}
-					let func_id = function_ids.get(&ident.name).unwrap();
+					let func_id = function_ids.get(&ident.sym).unwrap();
 					self.define_function(*func_id, &decl, &body).unwrap();
 				}
+
+				hir::ItemKind::Adt { .. } | hir::ItemKind::Trait { .. } => todo!(),
 			}
 		}
 	}
@@ -352,26 +362,30 @@ impl FunctionGenerator<'_, '_> {
 
 	fn codegen_stmt(&mut self, stmt: &tbir::Stmt) -> Result<bool /* should_stop_block_codegen */> {
 		tracing::trace!(id = ?stmt.id, "codegen_stmt");
+
 		match &stmt.kind {
 			tbir::StmtKind::Expr(expr) => match self.codegen_expr(expr)? {
 				MaybeValue::Value(_) | MaybeValue::Zst => {}
 				MaybeValue::Never => return Ok(true),
 			},
-			tbir::StmtKind::Let { ident, value, .. } => match self.codegen_expr(value)? {
+			tbir::StmtKind::Let {
+				name: ident, value, ..
+			} => match self.codegen_expr(value)? {
 				MaybeValue::Value(expr_value) => {
 					let ty = self.to_cl_type(&value.ty).unwrap();
 					let variable = self.builder.declare_var(ty);
 					self.builder.def_var(variable, expr_value);
 
-					self.values.insert(ident.name, Some(variable));
+					self.values.insert(ident.sym, Some(variable));
 				}
 				MaybeValue::Zst => {
-					self.values.insert(ident.name, None);
+					self.values.insert(ident.sym, None);
 				}
 				MaybeValue::Never => {}
 			},
 			tbir::StmtKind::Assign { target, value } => {
-				let Some(variable) = *self.values.get(&target.name).unwrap() else {
+				let target = target.segments[0];
+				let Some(variable) = *self.values.get(&target.sym).unwrap() else {
 					// handle zst
 					return Ok(false);
 				};
@@ -426,11 +440,14 @@ impl FunctionGenerator<'_, '_> {
 				};
 				MaybeValue::Value(value)
 			}
-			tbir::ExprKind::Access(ident) => match self.values.get(&ident.name) {
-				Some(Some(var)) => MaybeValue::Value(self.builder.use_var(*var)),
-				Some(None) => MaybeValue::Zst,
-				None => return Err("var undefined"),
-			},
+			tbir::ExprKind::Access(path) => {
+				let path = path.segments[0];
+				match self.values.get(&path.sym) {
+					Some(Some(var)) => MaybeValue::Value(self.builder.use_var(*var)),
+					Some(None) => MaybeValue::Zst,
+					None => return Err("var undefined"),
+				}
+			}
 
 			tbir::ExprKind::Unary(op, expr) => todo!("codegen unary {op:?} {expr:?}"),
 
@@ -439,10 +456,11 @@ impl FunctionGenerator<'_, '_> {
 			}
 			tbir::ExprKind::FnCall { expr, args } => {
 				// TODO: allow indirect calls
-				let tbir::ExprKind::Access(ident) = expr.kind else {
+				let tbir::ExprKind::Access(path) = &expr.kind else {
 					todo!("not a fn")
 				};
-				let Some(func_id) = self.functions.get(&ident.name) else {
+				let path = path.segments[0];
+				let Some(func_id) = self.functions.get(&path.sym) else {
 					return Err("invalid fn call");
 				};
 

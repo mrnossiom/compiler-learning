@@ -33,19 +33,43 @@ pub struct Item {
 #[derive(Debug)]
 pub enum ItemKind {
 	Extern {
-		ident: ast::Ident,
+		name: ast::Ident,
 		decl: Box<FnDecl>,
+		abi: Box<Expr>,
 	},
 	Function {
-		ident: ast::Ident,
+		name: ast::Ident,
 		decl: Box<FnDecl>,
-		body: Box<Block>,
+		body: Option<Box<Block>>,
 	},
+
+	/// Algebraic Data Type
+	Adt {
+		name: ast::Ident,
+		variants: Vec<AdtVariant>,
+	},
+
+	Trait {
+		name: ast::Ident,
+	},
+}
+
+#[derive(Debug)]
+pub struct AdtVariant {
+	pub name: ast::Ident,
+	pub fields: Vec<AdtFieldDef>,
+	pub span: Span,
+}
+
+#[derive(Debug)]
+pub struct AdtFieldDef {
+	pub name: ast::Ident,
+	pub ty: ast::Ty,
 }
 
 #[derive(Debug, Clone)]
 pub struct FnDecl {
-	pub inputs: Vec<(ast::Ident, ast::Ty)>,
+	pub inputs: Vec<ast::Param>,
 	pub output: Box<ast::Ty>,
 
 	pub span: Span,
@@ -78,11 +102,6 @@ pub enum StmtKind {
 	},
 
 	// move these to expr
-	Assign {
-		target: ast::Ident,
-		value: Box<Expr>,
-	},
-
 	Loop {
 		block: Box<Block>,
 	},
@@ -97,7 +116,7 @@ pub struct Expr {
 
 #[derive(Debug)]
 pub enum ExprKind {
-	Access(ast::Ident),
+	Access(ast::Path),
 	Literal(LiteralKind, Symbol),
 
 	Unary(Spanned<UnaryOp>, Box<Expr>),
@@ -112,6 +131,13 @@ pub enum ExprKind {
 		cond: Box<Expr>,
 		conseq: Box<Block>,
 		altern: Option<Box<Block>>,
+	},
+
+	Deref(Box<Expr>),
+
+	Assign {
+		target: Box<Expr>,
+		value: Box<Expr>,
 	},
 
 	Return(Option<Box<Expr>>),

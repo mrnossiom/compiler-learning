@@ -41,4 +41,15 @@ fn main() {
 		123 => {}
 		else => {}
 	}
+
+	// annotate functions as such
+	var myexpr = f() : uint;
+
+	var myvec = (
+		(1..=100)
+			.into_iter()
+			.collect() : Vec<_>
+	)
+	.into_iter()
+	.map((|x| x+1):fn(uint) -> uint);
 }

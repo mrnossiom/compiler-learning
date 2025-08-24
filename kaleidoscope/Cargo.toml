@@ -69,6 +69,7 @@ unwrap_used = "warn"
 # print_stderr = "warn"
 # print_stdout = "warn"
 
+missing_const_for_fn = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"

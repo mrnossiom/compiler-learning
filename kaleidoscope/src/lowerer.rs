@@ -2,8 +2,6 @@
 
 use std::sync::atomic::{self, AtomicU32};
 
-use bumpalo::Bump;
-
 use crate::{
 	ast::{self, Spanned},
 	errors,
@@ -15,23 +13,19 @@ use crate::{
 #[derive(Debug)]
 pub struct LowerCtx<'scx> {
 	pub scx: &'scx SessionCtx,
-
-	pub arena: Bump,
 }
 
 impl<'scx> LowerCtx<'scx> {
 	#[must_use]
 	pub fn new(scx: &'scx SessionCtx) -> Self {
-		Self {
-			scx,
-			arena: Bump::default(),
-		}
+		Self { scx }
 	}
 }
 
 impl LowerCtx<'_> {
-	pub fn lower_root<'a>(&'a self, ast: &'a ast::Root) -> Root<'a> {
+	pub fn lower_root(&self, ast: &ast::Root) -> Root {
 		tracing::trace!("lower_root");
+
 		let lowerer = Lowerer::new(self);
 		lowerer.lower_items(ast)
 	}
@@ -64,40 +58,30 @@ impl<'lcx> Lowerer<'lcx> {
 		let hid = self.next_node_id.fetch_add(1, atomic::Ordering::Relaxed);
 		NodeId(hid)
 	}
-
-	fn alloc<T>(&self, t: T) -> &'lcx T {
-		self.lcx.arena.alloc(t)
-	}
-
-	fn alloc_iter<T, I>(&self, i: I) -> &'lcx [T]
-	where
-		I: IntoIterator<Item = T>,
-		I::IntoIter: ExactSizeIterator,
-	{
-		self.lcx.arena.alloc_slice_fill_iter(i)
-	}
 }
 
-impl<'lcx> Lowerer<'lcx> {
+impl Lowerer<'_> {
 	#[must_use]
-	pub fn lower_items(&self, file: &'lcx ast::Root) -> Root<'lcx> {
-		let items = file.items.iter().map(|item| self.lower_item(item));
+	pub fn lower_items(&self, file: &ast::Root) -> Root {
+		let items = file
+			.items
+			.iter()
+			.map(|item| self.lower_item(item))
+			.collect();
 
-		Root {
-			items: self.alloc_iter(items),
-		}
+		Root { items }
 	}
 
-	fn lower_item(&self, item: &'lcx ast::Item) -> Item<'lcx> {
+	fn lower_item(&self, item: &ast::Item) -> Item {
 		let kind = match &item.kind {
 			ast::ItemKind::Function { ident, decl, body } => ItemKind::Function {
 				ident: *ident,
-				decl: self.lower_fn_decl(decl),
-				body: self.alloc(self.lower_block(body)),
+				decl: Box::new(self.lower_fn_decl(decl)),
+				body: Box::new(self.lower_block(body)),
 			},
 			ast::ItemKind::Extern { ident, decl } => ItemKind::Extern {
 				ident: *ident,
-				decl: self.lower_fn_decl(decl),
+				decl: Box::new(self.lower_fn_decl(decl)),
 			},
 		};
 		Item {
@@ -107,21 +91,19 @@ impl<'lcx> Lowerer<'lcx> {
 		}
 	}
 
-	fn lower_fn_decl(&self, decl: &'lcx ast::FnDecl) -> &'lcx FnDecl<'lcx> {
-		let inputs = decl.args.iter().cloned();
-		self.alloc(FnDecl {
-			inputs: self.alloc_iter(inputs),
-			output: decl.ret.as_ref().unwrap_or_else(|| {
-				self.alloc(ast::Ty {
-					kind: ast::TyKind::Unit,
-					span: decl.span.end(),
-				})
-			}),
+	fn lower_fn_decl(&self, decl: &ast::FnDecl) -> FnDecl {
+		let output = decl.ret.clone().unwrap_or_else(|| ast::Ty {
+			kind: ast::TyKind::Unit,
+			span: decl.span.end(),
+		});
+		FnDecl {
+			inputs: decl.args.clone(),
+			output: Box::new(output),
 			span: decl.span,
-		})
+		}
 	}
 
-	fn lower_block(&self, block: &'lcx ast::Block) -> Block<'lcx> {
+	fn lower_block(&self, block: &ast::Block) -> Block {
 		let mut stmts = Vec::new();
 		let mut ret = None;
 
@@ -131,7 +113,7 @@ impl<'lcx> Lowerer<'lcx> {
 
 			let kind = match &stmt.kind {
 				ast::StmtKind::Loop { body } => StmtKind::Loop {
-					block: self.alloc(self.lower_block(body)),
+					block: Box::new(self.lower_block(body)),
 				},
 				// desugar to simple loop
 				ast::StmtKind::WhileLoop { check, body } => self.lower_while_loop(check, body),
@@ -139,27 +121,27 @@ impl<'lcx> Lowerer<'lcx> {
 
 				ast::StmtKind::Let { ident, ty, value } => StmtKind::Let {
 					ident: *ident,
-					ty: self.alloc(ty.as_ref().map_or_else(
+					ty: Box::new(ty.as_ref().map_or_else(
 						|| ast::Ty {
 							kind: ast::TyKind::Infer,
 							span: ident.span.end(),
 						},
 						|ty| ty.as_ref().clone(),
 					)),
-					value: self.alloc(self.lower_expr(value)),
+					value: Box::new(self.lower_expr(value)),
 				},
 				ast::StmtKind::Assign { target, value } => StmtKind::Assign {
 					target: *target,
-					value: self.alloc(self.lower_expr(value)),
+					value: Box::new(self.lower_expr(value)),
 				},
 
 				ast::StmtKind::Expr(expr) => {
-					let expr = self.alloc(self.lower_expr(expr));
+					let expr = Box::new(self.lower_expr(expr));
 					StmtKind::Expr(expr)
 				}
 
 				ast::StmtKind::ExprRet(expr) => {
-					let expr = self.alloc(self.lower_expr(expr));
+					let expr = Box::new(self.lower_expr(expr));
 
 					// correct case
 					if tail.is_empty() {
@@ -185,7 +167,7 @@ impl<'lcx> Lowerer<'lcx> {
 		}
 
 		Block {
-			stmts: self.alloc(stmts),
+			stmts,
 			ret,
 			span: block.span,
 			id: self.make_node_id(block.id),
@@ -193,71 +175,68 @@ impl<'lcx> Lowerer<'lcx> {
 	}
 
 	/// Lower an AST `while cond { body }` to an HIR `loop { if cond { body } else { break } }`
-	fn lower_while_loop(&self, cond: &'lcx ast::Expr, body: &'lcx ast::Block) -> StmtKind<'lcx> {
+	fn lower_while_loop(&self, cond: &ast::Expr, body: &ast::Block) -> StmtKind {
 		let break_expr = Expr {
 			kind: ExprKind::Break(None),
 			span: body.span,
 			id: self.make_new_node_id(),
 		};
 		let altern_blk = Block {
-			stmts: self.alloc_iter([]),
-			ret: Some(self.alloc(break_expr)),
+			stmts: Vec::new(),
+			ret: Some(Box::new(break_expr)),
 			span: body.span,
 			id: self.make_new_node_id(),
 		};
 
 		let if_expr = Expr {
 			kind: ExprKind::If {
-				cond: self.alloc(self.lower_expr(cond)),
-				conseq: self.alloc(self.lower_block(body)),
-				altern: Some(self.alloc(altern_blk)),
+				cond: Box::new(self.lower_expr(cond)),
+				conseq: Box::new(self.lower_block(body)),
+				altern: Some(Box::new(altern_blk)),
 			},
 			span: body.span,
 			id: self.make_new_node_id(),
 		};
 		let loop_blk = Block {
-			stmts: self.alloc_iter([]),
-			ret: Some(self.alloc(if_expr)),
+			stmts: Vec::new(),
+			ret: Some(Box::new(if_expr)),
 
 			span: body.span,
 			id: self.make_new_node_id(),
 		};
 
 		StmtKind::Loop {
-			block: self.alloc(loop_blk),
+			block: Box::new(loop_blk),
 		}
 	}
 
-	fn lower_expr(&self, expr: &'lcx ast::Expr) -> Expr<'lcx> {
+	fn lower_expr(&self, expr: &ast::Expr) -> Expr {
 		let kind = match &expr.kind {
 			ast::ExprKind::Access(ident) => ExprKind::Access(*ident),
 			ast::ExprKind::Literal(lit, ident) => ExprKind::Literal(*lit, *ident),
 
 			ast::ExprKind::Paren(expr) => self.lower_expr(expr).kind,
-			ast::ExprKind::Unary { op, expr } => self.lower_unary(op, expr),
-			ast::ExprKind::Binary { op, left, right } => self.lower_binary(op, left, right),
-			ast::ExprKind::FnCall { expr, args } => {
-				let nargs = self.alloc_iter(args.bit.iter().map(|e| self.lower_expr(e)));
-				ExprKind::FnCall {
-					expr: self.alloc(self.lower_expr(expr)),
-					args: args.with_bit(nargs),
-				}
-			}
+			ast::ExprKind::Unary { op, expr } => self.lower_unary(*op, expr),
+			ast::ExprKind::Binary { op, left, right } => self.lower_binary(*op, left, right),
+			ast::ExprKind::FnCall { expr, args } => ExprKind::FnCall {
+				expr: Box::new(self.lower_expr(expr)),
+				args: args.with_bit(args.bit.iter().map(|e| self.lower_expr(e)).collect()),
+			},
 			ast::ExprKind::If {
 				cond,
 				conseq,
 				altern,
 			} => ExprKind::If {
-				cond: self.alloc(self.lower_expr(cond)),
-				conseq: self.alloc(self.lower_block(conseq)),
-				altern: altern.as_ref().map(|a| self.alloc(self.lower_block(a))),
+				cond: Box::new(self.lower_expr(cond)),
+				conseq: Box::new(self.lower_block(conseq)),
+				altern: altern.as_ref().map(|a| Box::new(self.lower_block(a))),
 			},
 
 			ast::ExprKind::Return(expr) => {
-				ExprKind::Return(expr.as_ref().map(|expr| self.alloc(self.lower_expr(expr))))
+				ExprKind::Return(expr.as_ref().map(|expr| Box::new(self.lower_expr(expr))))
 			}
 			ast::ExprKind::Break(expr) => {
-				ExprKind::Break(expr.as_ref().map(|expr| self.alloc(self.lower_expr(expr))))
+				ExprKind::Break(expr.as_ref().map(|expr| Box::new(self.lower_expr(expr))))
 			}
 			ast::ExprKind::Continue => ExprKind::Continue,
 		};
@@ -269,28 +248,24 @@ impl<'lcx> Lowerer<'lcx> {
 		}
 	}
 
-	fn lower_unary(
-		&self,
-		op: &'lcx Spanned<lexer::UnaryOp>,
-		expr: &'lcx ast::Expr,
-	) -> ExprKind<'lcx> {
-		ExprKind::Unary(*op, self.alloc(self.lower_expr(expr)))
+	fn lower_unary(&self, op: Spanned<lexer::UnaryOp>, expr: &ast::Expr) -> ExprKind {
+		ExprKind::Unary(op, Box::new(self.lower_expr(expr)))
 	}
 
 	fn lower_binary(
 		&self,
-		op: &'lcx Spanned<lexer::BinaryOp>,
-		left: &'lcx ast::Expr,
-		right: &'lcx ast::Expr,
-	) -> ExprKind<'lcx> {
+		op: Spanned<lexer::BinaryOp>,
+		left: &ast::Expr,
+		right: &ast::Expr,
+	) -> ExprKind {
 		// TODO: lower to interface call
 		// `a + b` becomes `Add.add(a, b)` or `<a as Add>.add(b)`
 		// e.g. ExprKind::FnCall { expr: to_core_func(op), args: vec![left, right] }
 
 		ExprKind::Binary(
-			*op,
-			self.alloc(self.lower_expr(left)),
-			self.alloc(self.lower_expr(right)),
+			op,
+			Box::new(self.lower_expr(left)),
+			Box::new(self.lower_expr(right)),
 		)
 	}
 }

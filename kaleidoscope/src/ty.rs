@@ -38,7 +38,7 @@ impl<'scx> TyCtx<'scx> {
 impl TyCtx<'_> {
 	#[must_use]
 	#[tracing::instrument(level = "trace", skip(self, decl, body,))]
-	pub fn typeck_fn(&self, name: Ident, decl: &FnDecl, body: &hir::Block<'_>) -> tbir::Block {
+	pub fn typeck_fn(&self, name: Ident, decl: &FnDecl, body: &hir::Block) -> tbir::Block {
 		let env = self.environment.borrow_mut().take().unwrap();
 		// defer put back
 
@@ -126,7 +126,7 @@ impl TyCtx<'_> {
 			})
 			.collect();
 
-		let ty = if let Ok(ty) = self.lower_ty(decl.output).as_no_infer() {
+		let ty = if let Ok(ty) = self.lower_ty(&decl.output).as_no_infer() {
 			ty
 		} else {
 			let report = errors::ty::function_cannot_infer_signature(decl.output.span);
@@ -165,7 +165,7 @@ pub struct Inferer<'tcx> {
 	item_env: &'tcx HashMap<Symbol, TyKind>,
 
 	decl: &'tcx FnDecl,
-	body: &'tcx hir::Block<'tcx>,
+	body: &'tcx hir::Block,
 
 	local_env: HashMap<Symbol, Vec<TyKind<Infer>>>,
 	// get this span out of here once we have an easy NodeId -> Span way
@@ -178,7 +178,7 @@ impl<'tcx> Inferer<'tcx> {
 	pub fn new(
 		tcx: &'tcx TyCtx,
 		decl: &'tcx FnDecl,
-		body: &'tcx hir::Block<'tcx>,
+		body: &'tcx hir::Block,
 		item_env: &'tcx HashMap<Symbol, TyKind>,
 	) -> Self {
 		Self {
@@ -230,13 +230,14 @@ impl Inferer<'_> {
 		self.unify(&self.decl.output.clone().as_infer(), &ret_ty);
 	}
 
-	fn infer_block<'lcx>(&mut self, block: &'lcx hir::Block<'lcx>) -> TyKind<Infer> {
-		for stmt in block.stmts {
+	fn infer_block(&mut self, block: &hir::Block) -> TyKind<Infer> {
+		for stmt in &block.stmts {
 			self.infer_stmt(stmt);
 		}
 
 		let expected_ret_ty = block
 			.ret
+			.as_ref()
 			.map_or(TyKind::Primitive(PrimitiveKind::Void), |expr| {
 				self.infer_expr(expr)
 			});
@@ -245,7 +246,7 @@ impl Inferer<'_> {
 		expected_ret_ty
 	}
 
-	fn infer_stmt<'lcx>(&mut self, stmt: &'lcx hir::Stmt<'lcx>) {
+	fn infer_stmt(&mut self, stmt: &hir::Stmt) {
 		match &stmt.kind {
 			hir::StmtKind::Expr(expr) => {
 				self.infer_expr(expr);
@@ -269,7 +270,7 @@ impl Inferer<'_> {
 		}
 	}
 
-	fn infer_expr<'lcx>(&mut self, expr: &'lcx hir::Expr<'lcx>) -> TyKind<Infer> {
+	fn infer_expr(&mut self, expr: &hir::Expr) -> TyKind<Infer> {
 		let ty = match &expr.kind {
 			hir::ExprKind::Access(ident) => self.resolve_var_ty(ident),
 			hir::ExprKind::Literal(lit, _ident) => match lit {
@@ -348,8 +349,10 @@ impl Inferer<'_> {
 				let conseq_ty = self.infer_block(conseq);
 				// if no `else` part, then it must return Unit
 				let altern_ty = altern
-					.map(|altern| self.infer_block(altern))
-					.unwrap_or(TyKind::Primitive(PrimitiveKind::Void));
+					.as_ref()
+					.map_or(TyKind::Primitive(PrimitiveKind::Void), |altern| {
+						self.infer_block(altern)
+					});
 
 				self.unify(&conseq_ty, &altern_ty)
 			}
@@ -550,8 +553,8 @@ impl TyKind<Infer> {
 	}
 }
 
-struct TbirBuilder<'a> {
-	body: &'a hir::Block<'a>,
+struct TbirBuilder<'body> {
+	body: &'body hir::Block,
 
 	expr_tys: HashMap<hir::NodeId, TyKind>,
 }
@@ -562,7 +565,7 @@ impl TbirBuilder<'_> {
 		self.build_block(self.body)
 	}
 	fn build_block(&self, block: &hir::Block) -> tbir::Block {
-		let ret = block.ret.map(|expr| self.build_expr(expr));
+		let ret = block.ret.as_ref().map(|expr| self.build_expr(expr));
 		let ty = ret
 			.as_ref()
 			.map_or(TyKind::Primitive(PrimitiveKind::Void), |expr| {
@@ -582,19 +585,19 @@ impl TbirBuilder<'_> {
 		}
 	}
 
-	fn build_stmt(&self, stmt: &hir::Stmt<'_>) -> tbir::Stmt {
-		let kind = match stmt.kind {
+	fn build_stmt(&self, stmt: &hir::Stmt) -> tbir::Stmt {
+		let kind = match &stmt.kind {
 			hir::StmtKind::Expr(expr) => tbir::StmtKind::Expr(self.build_expr(expr)),
 			hir::StmtKind::Let {
 				ident,
 				ty: _,
 				value,
 			} => tbir::StmtKind::Let {
-				ident,
+				ident: *ident,
 				value: self.build_expr(value),
 			},
 			hir::StmtKind::Assign { target, value } => tbir::StmtKind::Assign {
-				target,
+				target: *target,
 				value: self.build_expr(value),
 			},
 			hir::StmtKind::Loop { block } => tbir::StmtKind::Loop {
@@ -608,16 +611,16 @@ impl TbirBuilder<'_> {
 		}
 	}
 
-	fn build_expr(&self, expr: &hir::Expr<'_>) -> tbir::Expr {
-		let kind = match expr.kind {
-			hir::ExprKind::Access(ident) => tbir::ExprKind::Access(ident),
-			hir::ExprKind::Literal(kind, sym) => tbir::ExprKind::Literal(kind, sym),
+	fn build_expr(&self, expr: &hir::Expr) -> tbir::Expr {
+		let kind = match &expr.kind {
+			hir::ExprKind::Access(ident) => tbir::ExprKind::Access(*ident),
+			hir::ExprKind::Literal(kind, sym) => tbir::ExprKind::Literal(*kind, *sym),
 
 			hir::ExprKind::Unary(op, expr) => {
-				tbir::ExprKind::Unary(op, Box::new(self.build_expr(expr)))
+				tbir::ExprKind::Unary(*op, Box::new(self.build_expr(expr)))
 			}
 			hir::ExprKind::Binary(op, left, right) => tbir::ExprKind::Binary(
-				op,
+				*op,
 				Box::new(self.build_expr(left)),
 				Box::new(self.build_expr(right)),
 			),
@@ -635,13 +638,15 @@ impl TbirBuilder<'_> {
 			} => tbir::ExprKind::If {
 				cond: Box::new(self.build_expr(cond)),
 				conseq: Box::new(self.build_block(conseq)),
-				altern: altern.map(|altern| Box::new(self.build_block(altern))),
+				altern: altern
+					.as_ref()
+					.map(|altern| Box::new(self.build_block(altern))),
 			},
 			hir::ExprKind::Return(expr) => {
-				tbir::ExprKind::Return(expr.map(|expr| Box::new(self.build_expr(expr))))
+				tbir::ExprKind::Return(expr.as_ref().map(|expr| Box::new(self.build_expr(expr))))
 			}
 			hir::ExprKind::Break(expr) => {
-				tbir::ExprKind::Break(expr.map(|expr| Box::new(self.build_expr(expr))))
+				tbir::ExprKind::Break(expr.as_ref().map(|expr| Box::new(self.build_expr(expr))))
 			}
 
 			hir::ExprKind::Continue => tbir::ExprKind::Continue,

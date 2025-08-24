@@ -35,7 +35,7 @@ impl<'tcx> Collector<'tcx> {
 impl Collector<'_> {
 	pub fn collect_items(&mut self, hir: &hir::Root) {
 		tracing::trace!("collect_items");
-		for item in hir.items {
+		for item in &hir.items {
 			self.collect_item(item);
 		}
 
@@ -44,7 +44,7 @@ impl Collector<'_> {
 			.replace(Some(mem::take(&mut self.environment)));
 	}
 
-	fn collect_item(&mut self, item: &hir::Item<'_>) {
+	fn collect_item(&mut self, item: &hir::Item) {
 		match &item.kind {
 			hir::ItemKind::Function { ident, decl, .. } | hir::ItemKind::Extern { ident, decl } => {
 				let decl = self.tcx.lower_fn_decl(decl);

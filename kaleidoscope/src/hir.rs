@@ -19,103 +19,103 @@ impl fmt::Debug for NodeId {
 }
 
 #[derive(Debug)]
-pub struct Root<'lcx> {
-	pub items: &'lcx [Item<'lcx>],
+pub struct Root {
+	pub items: Vec<Item>,
 }
 
 #[derive(Debug)]
-pub struct Item<'lcx> {
-	pub kind: ItemKind<'lcx>,
+pub struct Item {
+	pub kind: ItemKind,
 	pub span: Span,
 	pub id: NodeId,
 }
 
 #[derive(Debug)]
-pub enum ItemKind<'lcx> {
+pub enum ItemKind {
 	Extern {
 		ident: ast::Ident,
-		decl: &'lcx FnDecl<'lcx>,
+		decl: Box<FnDecl>,
 	},
 	Function {
 		ident: ast::Ident,
-		decl: &'lcx FnDecl<'lcx>,
-		body: &'lcx Block<'lcx>,
+		decl: Box<FnDecl>,
+		body: Box<Block>,
 	},
 }
 
 #[derive(Debug, Clone)]
-pub struct FnDecl<'lcx> {
-	pub inputs: &'lcx [(ast::Ident, ast::Ty)],
-	pub output: &'lcx ast::Ty,
+pub struct FnDecl {
+	pub inputs: Vec<(ast::Ident, ast::Ty)>,
+	pub output: Box<ast::Ty>,
 
 	pub span: Span,
 }
 
 #[derive(Debug)]
-pub struct Block<'lcx> {
-	pub stmts: &'lcx [Stmt<'lcx>],
-	pub ret: Option<&'lcx Expr<'lcx>>,
-	pub span: Span,
-	pub id: NodeId,
-}
-
-#[derive(Debug)]
-pub struct Stmt<'lcx> {
-	pub kind: StmtKind<'lcx>,
+pub struct Block {
+	pub stmts: Vec<Stmt>,
+	pub ret: Option<Box<Expr>>,
 	pub span: Span,
 	pub id: NodeId,
 }
 
 #[derive(Debug)]
-pub enum StmtKind<'lcx> {
-	Expr(&'lcx Expr<'lcx>),
+pub struct Stmt {
+	pub kind: StmtKind,
+	pub span: Span,
+	pub id: NodeId,
+}
+
+#[derive(Debug)]
+pub enum StmtKind {
+	Expr(Box<Expr>),
 
 	Let {
 		ident: ast::Ident,
 		// Hinted ty
-		ty: &'lcx ast::Ty,
-		value: &'lcx Expr<'lcx>,
+		ty: Box<ast::Ty>,
+		value: Box<Expr>,
 	},
 
 	// move these to expr
 	Assign {
 		target: ast::Ident,
-		value: &'lcx Expr<'lcx>,
+		value: Box<Expr>,
 	},
 
 	Loop {
-		block: &'lcx Block<'lcx>,
+		block: Box<Block>,
 	},
 }
 
 #[derive(Debug)]
-pub struct Expr<'lcx> {
-	pub kind: ExprKind<'lcx>,
+pub struct Expr {
+	pub kind: ExprKind,
 	pub span: Span,
 	pub id: NodeId,
 }
 
 #[derive(Debug)]
-pub enum ExprKind<'lcx> {
+pub enum ExprKind {
 	Access(ast::Ident),
 	Literal(LiteralKind, Symbol),
 
-	Unary(Spanned<UnaryOp>, &'lcx Expr<'lcx>),
-	Binary(Spanned<BinaryOp>, &'lcx Expr<'lcx>, &'lcx Expr<'lcx>),
+	Unary(Spanned<UnaryOp>, Box<Expr>),
+	Binary(Spanned<BinaryOp>, Box<Expr>, Box<Expr>),
 
 	FnCall {
-		expr: &'lcx Expr<'lcx>,
-		args: Spanned<&'lcx [Expr<'lcx>]>,
+		expr: Box<Expr>,
+		args: Spanned<Vec<Expr>>,
 	},
 
 	If {
-		cond: &'lcx Expr<'lcx>,
-		conseq: &'lcx Block<'lcx>,
-		altern: Option<&'lcx Block<'lcx>>,
+		cond: Box<Expr>,
+		conseq: Box<Block>,
+		altern: Option<Box<Block>>,
 	},
 
-	Return(Option<&'lcx Expr<'lcx>>),
-	Break(Option<&'lcx Expr<'lcx>>),
+	Return(Option<Box<Expr>>),
+	Break(Option<Box<Expr>>),
 	// TODO: add scope label
 	Continue,
 }

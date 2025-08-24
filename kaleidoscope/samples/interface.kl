@@ -1,0 +1,13 @@
+type uint;
+
+trait Add<T> {
+	type Output;
+	fn add(&self, other: T) -> Self::Output;
+}
+
+impl Add<uint> for uint {
+	type Output = uint;
+	fn add(&self, other: uint) -> Self::Output {
+		internal("add_uint_signed", self, other)
+	}
+}

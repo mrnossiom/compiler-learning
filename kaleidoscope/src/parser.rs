@@ -4,6 +4,26 @@ use std::mem;
 
 use ariadne::{Label, Report, ReportKind};
 
+macro_rules! fn_name {
+	() => {{
+		const fn f() {}
+		fn type_name_of<T>(_: T) -> &'static str {
+			std::any::type_name::<T>()
+		}
+		let name = type_name_of(f);
+		let mut segments = name.rsplit("::");
+		// skip `f`
+		_ = segments.next();
+		segments.next().unwrap()
+	}};
+}
+
+macro_rules! debug_parser {
+	($self:expr) => {
+		tracing::trace!(current_kind = ?$self.token.kind, "{:<30}", fn_name!());
+	}
+}
+
 #[allow(clippy::enum_glob_use)]
 use crate::lexer::{
 	BinaryOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*, UnaryOp::*,
@@ -135,13 +155,15 @@ impl Parser<'_> {
 /// Expressions
 impl Parser<'_> {
 	fn parse_expr(&mut self) -> PResult<Expr> {
-		tracing::trace!(kind = ?self.token.kind, "parse_expr");
+		debug_parser!(self);
+
 		let lhs = self.parse_expr_single_and_postfix()?;
 		self.parse_binop_rhs(0, lhs)
 	}
 
 	fn parse_binop_rhs(&mut self, precedence: u32, mut lhs: Expr) -> PResult<Expr> {
-		tracing::trace!(kind = ?self.token.kind, "parse_binop_rhs");
+		debug_parser!(self);
+
 		let lo = self.token.span;
 
 		while let BinaryOp(binop) = self.token.kind
@@ -164,7 +186,7 @@ impl Parser<'_> {
 	}
 
 	fn parse_expr_single_and_postfix(&mut self) -> PResult<Expr> {
-		tracing::trace!(kind = ?self.token.kind, "parse_expr_single_and_postfix");
+		debug_parser!(self);
 
 		let mut expr = self.parse_expr_single()?;
 
@@ -188,7 +210,7 @@ impl Parser<'_> {
 
 	/// Parse a single expression without trying to link them using binary operators
 	fn parse_expr_single(&mut self) -> PResult<Expr> {
-		tracing::trace!(kind = ?self.token.kind, "parse_expr_single_and_postfix");
+		debug_parser!(self);
 
 		let lo = self.token.span;
 		let kind = match self.token.kind {
@@ -227,7 +249,7 @@ impl Parser<'_> {
 	}
 
 	fn parse_expr_not(&mut self) -> PResult<ExprKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_expr_not");
+		debug_parser!(self);
 
 		self.expect(UnaryOp(Not))?;
 		let span = self.last_token.span;
@@ -241,7 +263,7 @@ impl Parser<'_> {
 	}
 
 	fn parse_expr_paren(&mut self) -> PResult<ExprKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_expr_paren");
+		debug_parser!(self);
 
 		self.expect(Open(Paren))?;
 		let expr = Box::new(self.parse_expr()?);
@@ -251,14 +273,14 @@ impl Parser<'_> {
 	}
 
 	fn parse_expr_access(&mut self) -> PResult<ExprKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_expr_access");
+		debug_parser!(self);
 
 		let ident = self.expect_ident()?;
 		Ok(ExprKind::Access(ident))
 	}
 
 	fn parse_expr_if(&mut self) -> PResult<ExprKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_expr_if");
+		debug_parser!(self);
 
 		self.expect(Keyword(If))?;
 		let cond = self.parse_expr()?;
@@ -277,7 +299,7 @@ impl Parser<'_> {
 	}
 
 	fn parse_expr_return(&mut self) -> PResult<ExprKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_expr_return");
+		debug_parser!(self);
 
 		self.expect(Keyword(Return))?;
 
@@ -288,7 +310,7 @@ impl Parser<'_> {
 	}
 
 	fn parse_expr_break(&mut self) -> PResult<ExprKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_expr_break");
+		debug_parser!(self);
 
 		self.expect(Keyword(Break))?;
 		let expr = self.parse_expr().ok();
@@ -296,7 +318,7 @@ impl Parser<'_> {
 	}
 
 	fn parse_expr_continue(&mut self) -> PResult<ExprKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_expr_continue");
+		debug_parser!(self);
 
 		self.expect(Keyword(Continue))?;
 		Ok(ExprKind::Continue)
@@ -306,7 +328,8 @@ impl Parser<'_> {
 /// Items
 impl Parser<'_> {
 	pub fn parse_root(&mut self) -> PResult<Root> {
-		tracing::trace!(cur = ?self.token.kind, "parse_root");
+		debug_parser!(self);
+
 		let mut items = Vec::new();
 		while self.token.kind != Eof {
 			items.push(self.parse_item()?);
@@ -315,7 +338,8 @@ impl Parser<'_> {
 	}
 
 	fn parse_item(&mut self) -> PResult<Item> {
-		tracing::trace!(cur = ?self.token.kind, "parse_item");
+		debug_parser!(self);
+
 		let lo = self.token.span;
 		let kind = match self.token.kind {
 			Keyword(Fn) => self.parse_item_fn()?,
@@ -335,7 +359,8 @@ impl Parser<'_> {
 	}
 
 	fn parse_item_fn(&mut self) -> PResult<ItemKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_item_fn");
+		debug_parser!(self);
+
 		self.expect(Keyword(Fn))?;
 		let (ident, decl) = self.parse_fn_decl()?;
 		let body = Box::new(self.parse_block()?);
@@ -343,7 +368,8 @@ impl Parser<'_> {
 	}
 
 	fn parse_item_extern(&mut self) -> PResult<ItemKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_item_extern");
+		debug_parser!(self);
+
 		self.expect(Keyword(Extern))?;
 		self.expect(Keyword(Fn))?;
 		let (ident, decl) = self.parse_fn_decl()?;
@@ -352,7 +378,8 @@ impl Parser<'_> {
 	}
 
 	fn parse_fn_decl(&mut self) -> PResult<(Ident, FnDecl)> {
-		tracing::trace!(cur = ?self.token.kind, "parse_fn_decl");
+		debug_parser!(self);
+
 		let name = self.expect_ident()?;
 		let decl_lo = self.token.span;
 		let args = self.parse_seq(Paren, Comma, Parser::parse_argument)?;
@@ -372,7 +399,8 @@ impl Parser<'_> {
 	}
 
 	fn parse_argument(&mut self) -> PResult<(Ident, Ty)> {
-		tracing::trace!(cur = ?self.token.kind, "parse_argument");
+		debug_parser!(self);
+
 		let name = self.expect_ident()?;
 		self.expect(Colon)?;
 		let ty = self.parse_ty()?;
@@ -380,7 +408,8 @@ impl Parser<'_> {
 	}
 
 	fn parse_fn_call(&mut self, expr: Expr) -> PResult<Expr> {
-		tracing::trace!(cur = ?self.token.kind, "parse_fn_call");
+		debug_parser!(self);
+
 		let lo = self.token.span;
 		let expr_span = expr.span;
 		let args = self.parse_seq(Paren, Comma, Parser::parse_expr)?;
@@ -399,7 +428,8 @@ impl Parser<'_> {
 /// Types
 impl Parser<'_> {
 	fn parse_ty(&mut self) -> PResult<Ty> {
-		tracing::trace!(cur = ?self.token.kind, "parse_ty");
+		debug_parser!(self);
+
 		match self.token.kind {
 			Ident(_) => self.parse_ty_path(),
 			Ampersand => self.parse_ty_pointer(),
@@ -411,7 +441,8 @@ impl Parser<'_> {
 	}
 
 	fn parse_ty_path(&mut self) -> PResult<Ty> {
-		tracing::trace!(cur = ?self.token.kind, "parse_ty_path");
+		debug_parser!(self);
+
 		let lo = self.token.span;
 
 		let mut path = Vec::new();
@@ -435,7 +466,7 @@ impl Parser<'_> {
 	}
 
 	fn parse_ty_pointer(&mut self) -> PResult<Ty> {
-		tracing::trace!(cur = ?self.token.kind, "parse_ty_pointer");
+		debug_parser!(self);
 
 		let lo = self.token.span;
 		self.expect(Ampersand)?;
@@ -449,7 +480,8 @@ impl Parser<'_> {
 	}
 
 	fn parse_ty_generics(&mut self) -> PResult<Vec<Ty>> {
-		tracing::trace!(cur = ?self.token.kind, "parse_ty_generics");
+		debug_parser!(self);
+
 		let mut finished = false;
 
 		let mut seq = Vec::new();
@@ -468,7 +500,8 @@ impl Parser<'_> {
 /// Statements
 impl Parser<'_> {
 	fn parse_stmt(&mut self) -> PResult<Stmt> {
-		tracing::trace!(cur = ?self.token.kind, "parse_stmt");
+		debug_parser!(self);
+
 		let lo = self.token.span;
 		let kind = match self.token.kind {
 			Keyword(Loop) => self.parse_stmt_loop()?,
@@ -507,14 +540,16 @@ impl Parser<'_> {
 	}
 
 	fn parse_stmt_loop(&mut self) -> PResult<StmtKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_stmt_loop");
+		debug_parser!(self);
+
 		self.expect(Keyword(Loop))?;
 		let body = Box::new(self.parse_block()?);
 		Ok(StmtKind::Loop { body })
 	}
 
 	fn parse_stmt_while(&mut self) -> PResult<StmtKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_stmt_while");
+		debug_parser!(self);
+
 		self.expect(Keyword(While))?;
 		let check = Box::new(self.parse_expr()?);
 		let body = Box::new(self.parse_block()?);
@@ -522,7 +557,8 @@ impl Parser<'_> {
 	}
 
 	fn parse_stmt_var(&mut self) -> PResult<StmtKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_stmt_var");
+		debug_parser!(self);
+
 		self.expect(Keyword(Var))?;
 		let ident = self.expect_ident()?;
 
@@ -542,7 +578,8 @@ impl Parser<'_> {
 	}
 
 	fn parse_stmt_assign(&mut self) -> PResult<StmtKind> {
-		tracing::trace!(cur = ?self.token.kind, "parse_stmt_assign");
+		debug_parser!(self);
+
 		let ident = self.expect_ident()?;
 		self.expect(Eq)?;
 
@@ -557,7 +594,8 @@ impl Parser<'_> {
 
 impl Parser<'_> {
 	fn parse_block(&mut self) -> PResult<Block> {
-		tracing::trace!(cur = ?self.token.kind, "parse_block");
+		debug_parser!(self);
+
 		let lo = self.token.span;
 		self.expect(Open(Brace))?;
 		let mut stmts = Vec::new();

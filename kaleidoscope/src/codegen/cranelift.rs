@@ -244,8 +244,8 @@ impl<M: Module> CodeGenBackend for Generator<'_, M> {
 	fn codegen_root(&mut self, hir: &hir::Root) {
 		let mut function_ids = HashMap::new();
 
-		for item in hir.items {
-			match item.kind {
+		for item in &hir.items {
+			match &item.kind {
 				hir::ItemKind::Extern { ident, decl } => {
 					// TODO: do this elsewhere
 					let decl = self.tcx.lower_fn_decl(decl);
@@ -260,14 +260,14 @@ impl<M: Module> CodeGenBackend for Generator<'_, M> {
 				}
 			}
 		}
-		for item in hir.items {
-			match item.kind {
+		for item in &hir.items {
+			match &item.kind {
 				hir::ItemKind::Extern { .. } => {}
 				hir::ItemKind::Function { ident, decl, body } => {
 					// TODO: do this elsewhere
 					let decl = self.tcx.lower_fn_decl(decl);
 
-					let body = self.tcx.typeck_fn(ident, &decl, body);
+					let body = self.tcx.typeck_fn(*ident, &decl, body);
 					if self.tcx.scx.options.print.contains(&PrintKind::TypedBodyIr) {
 						println!("{body:#?}");
 					}

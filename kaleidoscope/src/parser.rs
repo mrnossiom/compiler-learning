@@ -1,4 +1,8 @@
 //! Tokens to AST parsing logic
+//!
+//! Contains the recursive decent parser of the language.
+//!
+//! Entrypoint to parsing is [`Parser::parse_root`].
 
 use std::{fmt, mem};
 
@@ -35,11 +39,11 @@ use crate::{
 		VariantKind,
 	},
 	bug, errors,
-	lexer::{BinaryOp, Delimiter, Lexer, Token, TokenKind},
+	lexer::{BinaryOp, Delimiter, Lexer, Token, TokenKind, UnaryOp},
 	session::{Diagnostic, SessionCtx, SourceFile, Span},
 };
 
-pub type PResult<T> = Result<T, Diagnostic>;
+pub type PResult<T> = std::result::Result<T, Diagnostic>;
 
 #[derive(Debug)]
 enum AssocOp {
@@ -127,18 +131,17 @@ impl Parser<'_> {
 		start.to(self.last_token.span)
 	}
 
-	fn parse_seq<T: fmt::Debug>(
+	fn parse_seq_rest<T: fmt::Debug>(
 		&mut self,
 		delim: Delimiter,
 		separator: TokenKind,
 		mut parse: impl FnMut(&mut Self) -> PResult<T>,
-	) -> PResult<(Vec<T>, Span)> {
-		let lo = self.token.span;
+	) -> PResult<Vec<T>> {
+		debug_assert_eq!(self.last_token.kind, Open(delim));
 
 		let mut finished = false;
 		let mut seq = Vec::new();
 
-		self.expect(Open(delim))?;
 		while !self.eat(Close(delim)) && !finished {
 			seq.push(parse(self)?);
 
@@ -146,7 +149,7 @@ impl Parser<'_> {
 			finished = !self.eat(separator);
 		}
 
-		Ok((seq, self.close_span(lo)))
+		Ok(seq)
 	}
 
 	fn parse_while<T>(
@@ -198,11 +201,10 @@ impl Parser<'_> {
 			let right = Box::new(self.parse_expr()?);
 
 			let new_kind = match assoc_op.bit {
-				AssocOp::Binary(bin_op) => ExprKind::Binary {
-					op: Spanned::new(bin_op, assoc_op.span),
-					left,
-					right,
-				},
+				AssocOp::Binary(bin_op) => {
+					let op = Spanned::new(bin_op, assoc_op.span);
+					ExprKind::Binary { op, left, right }
+				}
 				AssocOp::Assign => ExprKind::Assign {
 					target: left,
 					value: right,
@@ -227,7 +229,8 @@ impl Parser<'_> {
 		{
 			self.bump();
 			Some(Spanned::new(AssocOp::Binary(bin_op), self.last_token.span))
-		} else if precedence.is_none_or(|prec| prec == 0) && self.eat(Eq) {
+		} else if precedence.is_none() && self.eat(Eq) {
+			// takes precedence over anything
 			Some(Spanned::new(AssocOp::Assign, self.last_token.span))
 		} else {
 			None
@@ -238,31 +241,41 @@ impl Parser<'_> {
 	fn parse_expr_single_and_postfix(&mut self) -> PResult<Expr> {
 		debug_parser!(self);
 
-		let mut expr = self.parse_expr_single()?;
+		let lo = self.token.span;
+		let expr = self.parse_expr_single()?;
 
 		// check for postfix constructs
-		expr = if self.eat(Dot) {
+		let kind = if self.eat(Dot) {
 			if matches!(self.token.kind, Ident(_)) {
-				// `<expr> . foo`
-				todo!("parse member access")
+				// `<expr> . foo` or `<expr> . bar ( <args> )`
+				let field = self.expect_ident()?;
+
+				if self.eat(Open(Paren)) {
+					let args = self.parse_seq_rest(Paren, Comma, Parser::parse_expr)?;
+					ExprKind::Method(Box::new(expr), field, args)
+				} else {
+					ExprKind::Field(Box::new(expr), field)
+				}
 			} else if self.eat(BinaryOp(Mul)) {
 				// `<expr> . *`
-				Expr {
-					span: self.close_span(expr.span),
-					kind: ExprKind::Deref(Box::new(expr)),
-					id: self.make_node_id(),
-				}
+				ExprKind::Deref(Box::new(expr))
 			} else {
-				todo!("unexpected")
+				let report =
+					errors::parser::expected_construct_no_match("a postfix construct", self.token);
+				return Err(Diagnostic::new(report));
 			}
 		} else if self.check(Open(Paren)) {
 			// `<expr> ()`
 			self.parse_fn_call(expr)?
 		} else {
-			expr
+			return Ok(expr);
 		};
 
-		Ok(expr)
+		Ok(Expr {
+			kind,
+			span: self.close_span(lo),
+			id: self.make_node_id(),
+		})
 	}
 
 	/// Parse a single expression without eating binary operators
@@ -308,7 +321,7 @@ impl Parser<'_> {
 		})
 	}
 
-	/// `! <expr>`
+	/// Parse [`ExprKind::Unary`] for [`UnaryOp::Not`]
 	fn parse_expr_not(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
 		debug_assert_eq!(self.last_token.kind, UnaryOp(Not));
@@ -319,7 +332,7 @@ impl Parser<'_> {
 		Ok(ExprKind::Unary { op, expr })
 	}
 
-	/// `- <expr>`
+	/// Parse [`ExprKind::Unary`] for [`UnaryOp::Minus`]
 	fn parse_expr_neg(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
 		debug_assert_eq!(self.last_token.kind, BinaryOp(BinaryOp::Minus));
@@ -330,6 +343,7 @@ impl Parser<'_> {
 		Ok(ExprKind::Unary { op, expr })
 	}
 
+	/// Parse [`ExprKind::Literal`]
 	fn parse_expr_literal(&mut self) -> ExprKind {
 		debug_parser!(self);
 		assert!(matches!(self.token.kind, TokenKind::Literal(_, _)));
@@ -347,7 +361,7 @@ impl Parser<'_> {
 		}
 	}
 
-	/// `<ident>`
+	/// Parse [`ExprKind::Access`]
 	fn parse_expr_access(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
 
@@ -356,7 +370,7 @@ impl Parser<'_> {
 		Ok(ExprKind::Access(path))
 	}
 
-	/// `( <expr> )`
+	/// Parse [`ExprKind::Paren`]
 	fn parse_expr_paren(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
 		debug_assert_eq!(self.last_token.kind, Open(Paren));
@@ -367,7 +381,7 @@ impl Parser<'_> {
 		Ok(ExprKind::Paren(expr))
 	}
 
-	/// `if <expr> <block> [ else <block> ]`
+	/// Parse [`ExprKind::If`]
 	fn parse_expr_if(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
 		debug_assert_eq!(self.last_token.kind, Keyword(If));
@@ -387,7 +401,7 @@ impl Parser<'_> {
 		})
 	}
 
-	/// `return <expr>`
+	/// Parse [`ExprKind::Return`]
 	fn parse_expr_return(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
 		debug_assert_eq!(self.last_token.kind, Keyword(Return));
@@ -398,7 +412,7 @@ impl Parser<'_> {
 		Ok(ExprKind::Return(expr))
 	}
 
-	/// `break [ <label> ] <expr>`
+	/// Parse [`ExprKind::Break`]
 	fn parse_expr_break(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
 		debug_assert_eq!(self.last_token.kind, Keyword(Break));
@@ -408,7 +422,7 @@ impl Parser<'_> {
 		Ok(ExprKind::Break(expr))
 	}
 
-	/// `continue [ <label> ]`
+	/// Parse [`ExprKind::Continue`]
 	fn parse_expr_continue(&mut self) -> PResult<ExprKind> {
 		debug_parser!(self);
 		debug_assert_eq!(self.last_token.kind, Keyword(Continue));
@@ -446,7 +460,7 @@ impl Parser<'_> {
 		} else if self.eat(Keyword(For)) {
 			self.parse_item_trait_impl()?
 		} else if self.eat(Keyword(Type)) {
-			self.parse_item_type()?
+			ItemKind::Type(self.parse_item_type()?)
 		} else {
 			let report = errors::parser::expected_construct_no_match("an item", self.token);
 			return Err(Diagnostic::new(report));
@@ -459,7 +473,7 @@ impl Parser<'_> {
 		})
 	}
 
-	/// Parse [`ItemKind::Function`]
+	/// Parse [`Function`]
 	fn parse_item_fn(&mut self) -> PResult<Function> {
 		debug_parser!(self);
 		debug_assert_eq!(self.last_token.kind, Keyword(Fn));
@@ -481,7 +495,7 @@ impl Parser<'_> {
 		})
 	}
 
-	/// Parse [`ItemKind::Function`] with [`ItemKind::Function::externess`] set to some ABI.
+	/// Parse [`Function`] with [`Function::externess`] set to some ABI.
 	fn parse_item_extern(&mut self) -> PResult<ItemKind> {
 		debug_parser!(self);
 		debug_assert_eq!(self.last_token.kind, Keyword(Extern));
@@ -502,11 +516,11 @@ impl Parser<'_> {
 
 		let name = self.expect_ident()?;
 		let generics = self.parse_generics_def()?;
-		let fields = if self.check(Open(Brace)) {
-			let (fields, _) = self.parse_seq(Brace, Comma, Self::parse_field_def)?;
+		let fields = if self.eat(Open(Brace)) {
+			let fields = self.parse_seq_rest(Brace, Comma, Self::parse_field_def)?;
 			fields
-		} else if self.check(Open(Paren)) {
-			let (fields, _) = self.parse_seq(Paren, Comma, Self::parse_ty)?;
+		} else if self.eat(Open(Paren)) {
+			let fields = self.parse_seq_rest(Paren, Comma, Self::parse_ty)?;
 
 			fields
 				.into_iter()
@@ -537,7 +551,8 @@ impl Parser<'_> {
 
 		let name = self.expect_ident()?;
 		let generics = self.parse_generics_def()?;
-		let (variants, _) = self.parse_seq(Brace, Comma, Self::parse_variant_def)?;
+		self.expect(Open(Brace))?;
+		let variants = self.parse_seq_rest(Brace, Comma, Self::parse_variant_def)?;
 
 		Ok(ItemKind::Enum {
 			name,
@@ -582,8 +597,8 @@ impl Parser<'_> {
 		})
 	}
 
-	/// Parse [`ItemKind::Type`]
-	fn parse_item_type(&mut self) -> PResult<ItemKind> {
+	/// Parse [`Type`]
+	fn parse_item_type(&mut self) -> PResult<Type> {
 		debug_parser!(self);
 		debug_assert_eq!(self.last_token.kind, Keyword(Type));
 
@@ -600,7 +615,7 @@ impl Parser<'_> {
 			return Err(Diagnostic::new(report));
 		};
 
-		Ok(ItemKind::Type(Type { name, alias }))
+		Ok(Type { name, alias })
 	}
 
 	/// Parse [`FieldDef`]
@@ -629,10 +644,10 @@ impl Parser<'_> {
 		let name = self.expect_ident()?;
 
 		let fields = if self.check(Open(Brace)) {
-			let (fields, _) = self.parse_seq(Brace, Comma, Self::parse_field_def)?;
+			let fields = self.parse_seq_rest(Brace, Comma, Self::parse_field_def)?;
 			VariantKind::Struct(fields)
 		} else if self.check(Open(Paren)) {
-			let (fields, _) = self.parse_seq(Paren, Comma, Self::parse_ty)?;
+			let fields = self.parse_seq_rest(Paren, Comma, Self::parse_ty)?;
 			VariantKind::Tuple(fields)
 		} else {
 			VariantKind::Bare
@@ -667,14 +682,21 @@ impl Parser<'_> {
 		debug_parser!(self);
 
 		let name = self.expect_ident()?;
-		let (params, span) = self.parse_seq(Paren, Comma, Parser::parse_param)?;
+		let args_lo = self.token.span;
+		self.expect(Open(Paren))?;
+		let params = self.parse_seq_rest(Paren, Comma, Parser::parse_param)?;
 		let ret = if !self.check(Open(Brace)) && !self.check(Semi) {
 			Some(self.parse_ty()?)
 		} else {
 			None
 		};
 
-		Ok((name, FnDecl { params, ret, span }))
+		let fn_decl = FnDecl {
+			params,
+			ret,
+			span: self.close_span(args_lo),
+		};
+		Ok((name, fn_decl))
 	}
 
 	fn parse_param(&mut self) -> PResult<Param> {
@@ -727,21 +749,17 @@ impl Parser<'_> {
 		Ok(generics)
 	}
 
-	fn parse_fn_call(&mut self, expr: Expr) -> PResult<Expr> {
+	/// Parse [`ExprKind::FnCall`]
+	fn parse_fn_call(&mut self, expr: Expr) -> PResult<ExprKind> {
 		debug_parser!(self);
 
-		let lo = expr.span;
+		let args_lo = self.token.span;
+		self.expect(Open(Paren))?;
+		let args = self.parse_seq_rest(Paren, Comma, Parser::parse_expr)?;
 
-		let (args, span) = self.parse_seq(Paren, Comma, Parser::parse_expr)?;
-
-		let expr_kind = ExprKind::FnCall {
+		Ok(ExprKind::FnCall {
 			expr: Box::new(expr),
-			args: Spanned::new(args, span),
-		};
-		Ok(Expr {
-			kind: expr_kind,
-			span: self.close_span(lo),
-			id: self.make_node_id(),
+			args: Spanned::new(args, self.close_span(args_lo)),
 		})
 	}
 }
@@ -751,44 +769,43 @@ impl Parser<'_> {
 	fn parse_ty(&mut self) -> PResult<Ty> {
 		debug_parser!(self);
 
-		match self.token.kind {
-			Ident(_) => self.parse_ty_path(),
-			Ampersand => self.parse_ty_pointer(),
-			_ => {
-				let report = errors::parser::expected_construct_no_match("a type", self.token);
-				Err(Diagnostic::new(report))
-			}
-		}
-	}
-
-	fn parse_ty_path(&mut self) -> PResult<Ty> {
-		debug_parser!(self);
-
 		let lo = self.token.span;
-		let path = self.parse_path()?;
+
+		let kind = if matches!(self.token.kind, Ident(_)) {
+			self.parse_ty_path()?
+		} else if self.eat(Ampersand) {
+			self.parse_ty_pointer()?
+		} else {
+			let report = errors::parser::expected_construct_no_match("a type", self.token);
+			return Err(Diagnostic::new(report));
+		};
 
 		Ok(Ty {
-			kind: TyKind::Path(path),
+			kind,
 			span: self.close_span(lo),
 		})
 	}
 
-	/// `& <ty>`
-	fn parse_ty_pointer(&mut self) -> PResult<Ty> {
+	fn parse_ty_path(&mut self) -> PResult<TyKind> {
 		debug_parser!(self);
+		debug_assert!(matches!(self.token.kind, Ident(_)));
 
-		let lo = self.token.span;
-		self.expect(Ampersand)?;
+		let path = self.parse_path()?;
+
+		Ok(TyKind::Path(path))
+	}
+
+	/// Parse [`TyKind::Pointer`]
+	fn parse_ty_pointer(&mut self) -> PResult<TyKind> {
+		debug_parser!(self);
+		debug_assert_eq!(self.last_token.kind, Ampersand);
 
 		let ty = Box::new(self.parse_ty()?);
 
-		Ok(Ty {
-			kind: TyKind::Pointer(ty),
-			span: self.close_span(lo),
-		})
+		Ok(TyKind::Pointer(ty))
 	}
 
-	/// `\< <ty>,* \>`
+	/// Parse `"<" <ty> ">"`
 	fn parse_ty_generics(&mut self) -> PResult<Vec<Ty>> {
 		debug_parser!(self);
 

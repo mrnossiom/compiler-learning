@@ -133,6 +133,8 @@ pub enum ExprKind {
 		altern: Option<Box<Block>>,
 	},
 
+	Method(Box<Expr>, ast::Ident, Vec<Expr>),
+	Field(Box<Expr>, ast::Ident),
 	Deref(Box<Expr>),
 
 	Assign {

@@ -1,8 +1,9 @@
-extern fn putchar(chr: uint);
+extern "c" fn putchar(chr: uint);
 // extern fn puts(s: &cstr);
-extern fn puts(s: &str);
+extern "c" fn puts(s: &str);
 
 fn main() void {
+	var num = 1.add(2);
 	// puts(c"Hello, World!");
 	puts("Hello, World!");
 }

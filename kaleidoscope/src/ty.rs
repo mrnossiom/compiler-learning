@@ -368,7 +368,10 @@ impl Inferer<'_> {
 				self.unify(&conseq_ty, &altern_ty)
 			}
 
+			hir::ExprKind::Method(expr, name, args) => todo!(),
+			hir::ExprKind::Field(expr, name) => todo!(),
 			hir::ExprKind::Deref(expr) => todo!("ensure expr ty is pointer"),
+
 			hir::ExprKind::Assign { target, value } => {
 				let target_ty = self.resolve_var_ty(todo!());
 				let value_ty = self.infer_expr(value);
@@ -657,7 +660,10 @@ impl TbirBuilder<'_> {
 					.map(|altern| Box::new(self.build_block(altern))),
 			},
 
+			hir::ExprKind::Method(expr, name, args) => todo!(),
+			hir::ExprKind::Field(expr, name) => todo!(),
 			hir::ExprKind::Deref(expr) => todo!(),
+
 			hir::ExprKind::Assign { target, value } => todo!(),
 
 			hir::ExprKind::Return(expr) => {

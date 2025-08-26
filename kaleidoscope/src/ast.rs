@@ -103,6 +103,10 @@ pub enum ExprKind {
 		altern: Option<Box<Block>>,
 	},
 
+	/// <expr> . <ident> ( <expr>* )
+	Method(Box<Expr>, Ident, Vec<Expr>),
+	/// <expr> . <ident>
+	Field(Box<Expr>, Ident),
 	/// `<expr> . *`
 	Deref(Box<Expr>),
 
@@ -149,10 +153,13 @@ pub struct Ty {
 
 #[derive(Debug, Clone)]
 pub enum TyKind {
+	/// See [`Path`]
 	Path(Path),
 
+	/// `& <ty>`
 	Pointer(Box<Ty>),
 
+	// TODO: unit or void? choose
 	Unit,
 
 	/// Corresponds to the explicit `_` token
@@ -173,7 +180,7 @@ pub struct Item {
 	pub id: NodeId,
 }
 
-/// `type <name> (= <ty>)|;`
+/// `type <name> [ = <ty> ] ;`
 #[derive(Debug)]
 pub struct Type {
 	pub name: Ident,

@@ -233,10 +233,13 @@ impl DiagnosticCtx {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PrintKind {
+	// IRs
 	Ast,
 	HigherIr,
 	TypedBodyIr,
 	BackendIr,
+
+	CollectedItems,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]

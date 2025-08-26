@@ -311,6 +311,14 @@ impl Lowerer<'_> {
 				altern: altern.as_ref().map(|a| Box::new(self.lower_block(a))),
 			},
 
+			ast::ExprKind::Method(expr, name, args) => ExprKind::Method(
+				Box::new(self.lower_expr(expr)),
+				*name,
+				args.iter().map(|e| self.lower_expr(e)).collect(),
+			),
+			ast::ExprKind::Field(expr, name) => {
+				ExprKind::Field(Box::new(self.lower_expr(expr)), *name)
+			}
 			ast::ExprKind::Deref(expr) => ExprKind::Deref(Box::new(self.lower_expr(expr))),
 
 			ast::ExprKind::Assign { target, value } => ExprKind::Assign {

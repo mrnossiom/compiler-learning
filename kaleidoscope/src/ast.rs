@@ -194,7 +194,7 @@ pub struct Function {
 	pub decl: FnDecl,
 	pub body: Option<Box<Block>>,
 
-	pub externess: Option<Expr>,
+	pub abi: Option<Expr>,
 }
 
 #[derive(Debug)]

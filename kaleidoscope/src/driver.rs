@@ -28,6 +28,8 @@ pub fn pipeline(scx: &SessionCtx) {
 	};
 	if scx.options.print.contains(&PrintKind::Ast) {
 		println!("{ast:#?}");
+
+		// crate::pretty_print::pretty_print_root(&ast).unwrap();
 	}
 
 	// lowering to HIR

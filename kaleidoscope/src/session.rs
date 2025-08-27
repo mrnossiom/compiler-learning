@@ -94,7 +94,11 @@ impl fmt::Debug for Symbol {
 		let interned = INTERNER.with(|i| {
 			i.get().map_or(Ok(false), |i| {
 				i.read().resolve(self.0).map_or(Ok(false), |str| {
-					write!(f, "`{str}`#{}", self.0.to_usize()).map(|()| true)
+					if f.alternate() {
+						write!(f, "{str}").map(|()| true)
+					} else {
+						write!(f, "`{str}`#{}", self.0.to_usize()).map(|()| true)
+					}
 				})
 			})
 		})?;

@@ -491,7 +491,7 @@ impl Parser<'_> {
 			name,
 			decl,
 			body,
-			externess: None,
+			abi: None,
 		})
 	}
 
@@ -504,7 +504,7 @@ impl Parser<'_> {
 		self.expect(Keyword(Fn))?;
 		let mut func = self.parse_item_fn()?;
 
-		func.externess = Some(abi);
+		func.abi = Some(abi);
 
 		Ok(ItemKind::Function(func))
 	}

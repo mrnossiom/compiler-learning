@@ -81,7 +81,7 @@ impl Lowerer<'_> {
 				name,
 				decl,
 				body,
-				externess,
+				abi: externess,
 			}) => ItemKind::Function {
 				name: *name,
 				decl: Box::new(self.lower_fn_decl(decl)),

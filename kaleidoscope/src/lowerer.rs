@@ -3,13 +3,12 @@
 use std::sync::atomic::{self, AtomicU32};
 
 use crate::{
-	ast::{self, Function, Spanned, Type},
+	ast::{self, Spanned},
 	errors,
 	hir::{
-		AdtFieldDef, AdtVariant, Block, Expr, ExprKind, FnDecl, Item, ItemKind, NodeId, Root, Stmt,
-		StmtKind,
+		self, AdtFieldDef, AdtVariant, Block, Expr, ExprKind, FnDecl, Function, Item, ItemKind,
+		NodeId, Root, Stmt, StmtKind, TraitItem, TraitItemKind, Type,
 	},
-	lexer,
 	session::{SessionCtx, Span},
 };
 
@@ -33,6 +32,16 @@ impl LowerCtx<'_> {
 		lowerer.lower_items(ast)
 	}
 }
+
+// pub trait Lower {
+// 	type Out;
+// 	fn lower(&self, cx: ()) -> Self::Out;
+// }
+
+// impl Lower for ast::Root {
+// 	type Out = hir::Root;
+// 	fn lower(&self, cx: ()) -> Self::Out {}
+// }
 
 #[derive(Debug)]
 pub struct Lowerer<'lcx> {
@@ -77,18 +86,21 @@ impl Lowerer<'_> {
 
 	fn lower_item(&self, item: &ast::Item) -> Item {
 		let kind = match &item.kind {
-			ast::ItemKind::Function(Function {
+			ast::ItemKind::Function(ast::Function {
 				name,
 				decl,
 				body,
-				abi: externess,
-			}) => ItemKind::Function {
+				abi,
+			}) => ItemKind::Function(Function {
 				name: *name,
 				decl: Box::new(self.lower_fn_decl(decl)),
 				body: body.as_ref().map(|block| Box::new(self.lower_block(block))),
-			},
+				abi: abi.as_ref().map(|expr| Box::new(self.lower_expr(expr))),
+			}),
 
-			ast::ItemKind::Type(Type { name, alias }) => todo!(),
+			ast::ItemKind::Type(ast::Type { name, alias }) => {
+				ItemKind::Type(Type(*name, alias.clone()))
+			}
 			ast::ItemKind::Struct {
 				name,
 				generics,
@@ -104,6 +116,7 @@ impl Lowerer<'_> {
 				};
 				ItemKind::Adt {
 					name: *name,
+					generics: generics.clone(),
 					variants: vec![struct_variant],
 				}
 			}
@@ -113,6 +126,7 @@ impl Lowerer<'_> {
 				variants,
 			} => ItemKind::Adt {
 				name: *name,
+				generics: generics.clone(),
 				variants: variants
 					.iter()
 					.map(|variant| self.lower_variant(variant))
@@ -124,17 +138,50 @@ impl Lowerer<'_> {
 				name,
 				generics,
 				members,
-			} => ItemKind::Trait { name: *name },
+			} => ItemKind::Trait {
+				name: *name,
+				generics: generics.clone(),
+				members: members
+					.iter()
+					.map(|member| self.lower_trait_member(member))
+					.collect(),
+			},
 			ast::ItemKind::TraitImpl {
 				type_,
 				trait_,
 				members,
-			} => todo!(),
+			} => ItemKind::TraitImpl {
+				type_: type_.clone(),
+				trait_: trait_.clone(),
+				members: members
+					.iter()
+					.map(|member| self.lower_trait_member(member))
+					.collect(),
+			},
 		};
 		Item {
 			kind,
 			span: item.span,
 			id: self.make_node_id(item.id),
+		}
+	}
+
+	fn lower_trait_member(&self, member: &ast::TraitItem) -> TraitItem {
+		let kind = match &member.kind {
+			ast::TraitItemKind::Type(ty) => TraitItemKind::Type(Type(ty.name, ty.alias.clone())),
+			ast::TraitItemKind::Function(func) => TraitItemKind::Function(Function {
+				name: func.name,
+				decl: Box::new(self.lower_fn_decl(&func.decl)),
+				body: func
+					.body
+					.as_ref()
+					.map(|block| Box::new(self.lower_block(block))),
+				abi: func.abi.as_ref().map(|abi| Box::new(self.lower_expr(abi))),
+			}),
+		};
+		TraitItem {
+			kind,
+			span: member.span,
 		}
 	}
 
@@ -342,13 +389,13 @@ impl Lowerer<'_> {
 		}
 	}
 
-	fn lower_unary(&self, op: Spanned<lexer::UnaryOp>, expr: &ast::Expr) -> ExprKind {
+	fn lower_unary(&self, op: Spanned<ast::UnaryOp>, expr: &ast::Expr) -> ExprKind {
 		ExprKind::Unary(op, Box::new(self.lower_expr(expr)))
 	}
 
 	fn lower_binary(
 		&self,
-		op: Spanned<lexer::BinaryOp>,
+		op: Spanned<ast::BinaryOp>,
 		left: &ast::Expr,
 		right: &ast::Expr,
 	) -> ExprKind {

@@ -3,11 +3,11 @@
 use core::fmt;
 use std::str::Chars;
 
-use crate::ast::Ident;
+use crate::ast::{BinaryOp, Ident};
 use crate::session::{BytePos, SessionCtx, Span, Symbol};
 
 #[allow(clippy::enum_glob_use)]
-use self::{BinaryOp::*, Delimiter::*, Keyword::*, LiteralKind::*, TokenKind::*, UnaryOp::*};
+use crate::lexer::{Keyword::*, LiteralKind::*, TokenKind::*};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Spacing {
@@ -31,20 +31,15 @@ impl Token {
 
 	fn maybe_glue_joint(&self, next: &Self) -> Option<Self> {
 		let glued_kind = match (self.kind, next.kind) {
-			(Eq, Eq) => BinaryOp(EqEq),
-			(BinaryOp(Gt), Eq) => BinaryOp(Ge),
-			(BinaryOp(Lt), Eq) => BinaryOp(Le),
+			(Eq, Eq) => EqEq,
 
-			(BinaryOp(BinaryOp::Minus), BinaryOp(Lt)) => Arrow,
-			(UnaryOp(Not), Eq) => BinaryOp(Ne),
-
-			(BinaryOp(Lt), BinaryOp(Lt)) => BinaryOp(Shl),
-			(BinaryOp(Gt), BinaryOp(Gt)) => BinaryOp(Shr),
+			(Lt, Lt) => Shl,
+			(Gt, Gt) => Shr,
 
 			(Colon, Colon) => PathSep,
 
 			(Ampersand, Ampersand) => todo!("for recovery, see `and` kw"),
-			(BinaryOp(Or), BinaryOp(Or)) => todo!("for recovery, see `or` kw"),
+			(Or, Or) => todo!("for recovery, see `or` kw"),
 
 			(_, _) => return None,
 		};
@@ -67,30 +62,65 @@ pub enum TokenKind {
 	Keyword(Keyword),
 	Literal(LiteralKind, Symbol),
 
-	UnaryOp(UnaryOp),
-	BinaryOp(BinaryOp),
+	OpenParen,
+	CloseParen,
+	OpenBracket,
+	CloseBracket,
+	OpenBrace,
+	CloseBrace,
 
-	Open(Delimiter),
-	Close(Delimiter),
-
-	/// `->`
-	Arrow,
+	/// `!`
+	Not,
+	/// `+`
+	Plus,
+	/// `-`
+	Dash,
+	/// `*`
+	Star,
+	/// `/`
+	Div,
+	/// `%`
+	Mod,
+	/// `&`
+	And,
+	/// `|`
+	Or,
+	/// `^`
+	Xor,
+	/// `<<`
+	Shl,
+	/// `>>`
+	Shr,
+	/// `>`
+	Gt,
+	/// `>=`
+	Ge,
+	/// `<`
+	Lt,
+	/// `<=`
+	Le,
+	/// `==`
+	EqEq,
+	/// `!=`
+	Ne,
+	/// `,`
 	Comma,
+	/// `:`
 	Colon,
+	/// `;`
 	Semi,
+	/// `.`
 	Dot,
 	/// `&`
 	Ampersand,
-
 	/// `=`
 	Eq,
-
 	/// `::`
 	PathSep,
 
+	/// Fallback token for unrecognized lexeme
 	Unknown,
-
-	/// Used to reduce boilerplate with Option
+	/// Used to reduce `Option` boilerplate
 	Eof,
 }
 
@@ -102,13 +132,35 @@ impl fmt::Display for TokenKind {
 			Keyword(_) => write!(f, "a keyword"),
 			Literal(kind, _) => write!(f, "a {kind} literal"),
 
-			UnaryOp(kind) => write!(f, "{kind}"),
-			BinaryOp(kind) => write!(f, "{kind}"),
+			OpenParen => write!(f, "an opening parenthesis"),
+			CloseParen => write!(f, "a closing parenthesis"),
+			OpenBracket => write!(f, "an opening bracket"),
+			CloseBracket => write!(f, "a closing bracket"),
+			OpenBrace => write!(f, "an opening brace"),
+			CloseBrace => write!(f, "a closing brace"),
 
-			Open(kind) => write!(f, "an opening {kind}"),
-			Close(kind) => write!(f, "a closing {kind}"),
+			Not => write!(f, "a logical negation"),
+			Plus => write!(f, "a plus operator"),
+			Dash => write!(f, "a minus operator"),
+			Star => write!(f, "a multiplication operator"),
+			Div => write!(f, "a division operator"),
+			Mod => write!(f, "a modulo operator"),
 
-			Arrow => write!(f, "an arrow"),
+			And => write!(f, "an and operator"),
+			Or => write!(f, "an or operator"),
+			Xor => write!(f, "a xor operator"),
+
+			Shl => write!(f, "a shift left operator"),
+			Shr => write!(f, "a shift right operator"),
+
+			Gt => write!(f, "a greater than comparator"),
+			Ge => write!(f, "a greater or equal comparator"),
+			Lt => write!(f, "a lesser than comparator"),
+			Le => write!(f, "a lesser or equal comparator"),
+
+			EqEq => write!(f, "a equal comparator"),
+			Ne => write!(f, "a different comparator"),
+
 			Comma => write!(f, "a comma"),
 			Colon => write!(f, "a colon"),
 			Semi => write!(f, "a semicolon"),
@@ -167,121 +219,6 @@ pub enum Keyword {
 	Return,
 	Break,
 	Continue,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Delimiter {
-	Paren,
-	Bracket,
-	Brace,
-	// Lexemes are `Lt` and `Gt`
-	Angled,
-}
-
-impl fmt::Display for Delimiter {
-	/// Should fit in the sentence "an opening {}" / "a closing {}"
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Paren => write!(f, "parenthesis"),
-			Bracket => write!(f, "bracket"),
-			Brace => write!(f, "brace"),
-			Angled => write!(f, "angle bracket"),
-		}
-	}
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnaryOp {
-	/// `!`
-	Not,
-	// TODO: dissociate lexer token kind from ast constructs, too much tokens are
-	// not reachable.
-	/// `-`
-	Minus,
-}
-
-impl fmt::Display for UnaryOp {
-	/// Should fit in the sentence "found {}"
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Not => write!(f, "a negate sign"),
-			UnaryOp::Minus => write!(f, "an oppsite sign"),
-		}
-	}
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOp {
-	// Arithmetic
-	/// `+`
-	Plus,
-	/// `-`
-	Minus,
-	/// `*`
-	Mul,
-	/// `/`
-	Div,
-	/// `%`
-	///
-	/// Also commonly known as `Rem`
-	#[doc(alias = "Rem")]
-	Mod,
-
-	// Bitwise
-	/// `&`
-	And,
-	/// `|`
-	Or,
-	/// `^`
-	Xor,
-
-	/// `<<`
-	Shl,
-	/// `>>`
-	Shr,
-
-	// Compairaison
-	/// `>`
-	Gt,
-	/// `>=`
-	Ge,
-	/// `<`
-	Lt,
-	/// `<=`
-	Le,
-
-	/// `==`
-	EqEq,
-	/// `!=`
-	Ne,
-}
-
-impl fmt::Display for BinaryOp {
-	/// Should fit in the sentence "found {}"
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Plus => write!(f, "a plus operator"),
-			BinaryOp::Minus => write!(f, "a minus operator"),
-			Mul => write!(f, "a multiplication operator"),
-			Div => write!(f, "a division operator"),
-			Mod => write!(f, "a modulo operator"),
-
-			And => write!(f, "an and operator"),
-			Or => write!(f, "an or operator"),
-			Xor => write!(f, "a xor operator"),
-
-			Shl => write!(f, "a shift left operator"),
-			Shr => write!(f, "a shift right operator"),
-
-			Gt => write!(f, "a greater than comparator"),
-			Ge => write!(f, "a greater or equal comparator"),
-			Lt => write!(f, "a lesser than comparator"),
-			Le => write!(f, "a lesser or equal comparator"),
-
-			EqEq => write!(f, "a equal comparator"),
-			Ne => write!(f, "a different comparator"),
-		}
-	}
 }
 
 impl BinaryOp {
@@ -443,16 +380,16 @@ impl Lexer<'_, '_> {
 				}
 
 				// Delimiters
-				'(' => Open(Paren),
-				')' => Close(Paren),
-				'[' => Open(Bracket),
-				']' => Close(Bracket),
-				'{' => Open(Brace),
-				'}' => Close(Brace),
+				'(' => OpenParen,
+				')' => CloseParen,
+				'[' => OpenBracket,
+				']' => CloseBracket,
+				'{' => OpenBrace,
+				'}' => CloseBrace,
 
-				'+' => BinaryOp(Plus),
-				'-' => BinaryOp(BinaryOp::Minus),
-				'*' => BinaryOp(Mul),
+				'+' => Plus,
+				'-' => Dash,
+				'*' => Star,
 				'/' => match self.first() {
 					'/' => {
 						// eat the whole line
@@ -467,15 +404,15 @@ impl Lexer<'_, '_> {
 						spacing = Spacing::Alone;
 						continue;
 					}
-					_ => BinaryOp(Div),
+					_ => Div,
 				},
-				'%' => BinaryOp(Mod),
+				'%' => Mod,
 
-				'>' => BinaryOp(Gt),
-				'<' => BinaryOp(Lt),
+				'>' => Gt,
+				'<' => Lt,
 				'=' => Eq,
 
-				'!' => UnaryOp(Not),
+				'!' => Not,
 
 				',' => Comma,
 				'.' => Dot,

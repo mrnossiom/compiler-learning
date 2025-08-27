@@ -3,14 +3,16 @@
 //! This essentially prints the AST taking line length into account. It also
 //! reads content that not in the AST like comments to not lose any data.
 
+#![expect(unused_variables, clippy::todo)]
+
 use std::io::{self, Write, stdout};
 
 use crate::{
 	ast::{
-		Block, Expr, ExprKind, Function, Item, ItemKind, Param, Path, Root, Stmt, StmtKind, Ty,
-		TyKind, Type,
+		BinaryOp, Block, Expr, ExprKind, Function, Item, ItemKind, Param, Path, Root, Stmt,
+		StmtKind, Ty, TyKind, Type, UnaryOp,
 	},
-	lexer::{BinaryOp, LiteralKind, UnaryOp},
+	lexer::LiteralKind,
 	session::Symbol,
 };
 

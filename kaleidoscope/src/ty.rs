@@ -6,9 +6,8 @@ use std::{
 };
 
 use crate::{
-	ast::{self, Ident},
-	bug, errors, hir,
-	lexer::{self, UnaryOp},
+	ast::{self, Ident, UnaryOp},
+	bug, errors, hir, lexer,
 	resolve::Environment,
 	session::{SessionCtx, Span, Symbol},
 	tbir,
@@ -311,7 +310,7 @@ impl Inferer<'_> {
 
 				#[allow(clippy::enum_glob_use)]
 				let expected = {
-					use lexer::BinaryOp::*;
+					use ast::BinaryOp::*;
 					match op.bit {
 						Plus | Minus | Mul | Div | Mod | And | Or | Xor | Shl | Shr => {
 							TyKind::Primitive(PrimitiveKind::UnsignedInt)

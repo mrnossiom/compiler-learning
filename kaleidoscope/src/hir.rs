@@ -3,8 +3,8 @@
 use std::fmt;
 
 use crate::{
-	ast::{self, Spanned},
-	lexer::{BinaryOp, LiteralKind, UnaryOp},
+	ast::{self, BinaryOp, Spanned, UnaryOp},
+	lexer::LiteralKind,
 	session::{Span, Symbol},
 };
 
@@ -32,26 +32,37 @@ pub struct Item {
 
 #[derive(Debug)]
 pub enum ItemKind {
-	Extern {
-		name: ast::Ident,
-		decl: Box<FnDecl>,
-		abi: Box<Expr>,
-	},
-	Function {
-		name: ast::Ident,
-		decl: Box<FnDecl>,
-		body: Option<Box<Block>>,
-	},
+	Type(Type),
+	Function(Function),
 
 	/// Algebraic Data Type
 	Adt {
 		name: ast::Ident,
+		generics: Vec<ast::Ident>,
 		variants: Vec<AdtVariant>,
 	},
 
 	Trait {
 		name: ast::Ident,
+		generics: Vec<ast::Ident>,
+		members: Vec<TraitItem>,
 	},
+	TraitImpl {
+		type_: ast::Path,
+		trait_: ast::Path,
+		members: Vec<TraitItem>,
+	},
+}
+
+#[derive(Debug)]
+pub struct Type(pub ast::Ident, pub Option<Box<ast::Ty>>);
+
+#[derive(Debug)]
+pub struct Function {
+	pub name: ast::Ident,
+	pub decl: Box<FnDecl>,
+	pub body: Option<Box<Block>>,
+	pub abi: Option<Box<Expr>>,
 }
 
 #[derive(Debug)]
@@ -59,6 +70,18 @@ pub struct AdtVariant {
 	pub name: ast::Ident,
 	pub fields: Vec<AdtFieldDef>,
 	pub span: Span,
+}
+
+#[derive(Debug)]
+pub struct TraitItem {
+	pub kind: TraitItemKind,
+	pub span: Span,
+}
+
+#[derive(Debug)]
+pub enum TraitItemKind {
+	Type(Type),
+	Function(Function),
 }
 
 #[derive(Debug)]

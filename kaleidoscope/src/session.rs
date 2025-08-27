@@ -231,7 +231,10 @@ impl DiagnosticCtx {
 	}
 
 	pub fn check_sane_or_exit(&self) {
-		if self.degraded.load(Ordering::Relaxed) {}
+		if self.degraded.load(Ordering::Relaxed) {
+			println!("Emitted at least one error!");
+			process::exit(1);
+		}
 	}
 }
 
@@ -239,7 +242,9 @@ impl DiagnosticCtx {
 pub enum PrintKind {
 	// IRs
 	Ast,
+	AstPretty,
 	HigherIr,
+	HigherIrPretty,
 	TypedBodyIr,
 	BackendIr,
 

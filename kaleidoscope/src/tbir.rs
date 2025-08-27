@@ -3,9 +3,9 @@
 //! This is what is handed to codegen
 
 use crate::{
-	ast::{self, Spanned},
+	ast::{self, BinaryOp, Spanned, UnaryOp},
 	hir,
-	lexer::{BinaryOp, LiteralKind, UnaryOp},
+	lexer::LiteralKind,
 	session::{Span, Symbol},
 	ty,
 };

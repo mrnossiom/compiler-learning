@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::{
-	lexer::{BinaryOp, LiteralKind, UnaryOp},
+	lexer::LiteralKind,
 	session::{Span, Symbol},
 };
 
@@ -68,6 +68,71 @@ pub struct Expr {
 	pub kind: ExprKind,
 	pub span: Span,
 	pub id: NodeId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+	/// `!`
+	Not,
+	// TODO: dissociate lexer token kind from ast constructs, too much tokens are
+	// not reachable.
+	/// `-`
+	Minus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+	// Arithmetic
+	/// `+`
+	Plus,
+	/// `-`
+	Minus,
+	/// `*`
+	Mul,
+	/// `/`
+	Div,
+	/// `%`
+	///
+	/// Also commonly known as `Rem`
+	#[doc(alias = "Rem")]
+	Mod,
+
+	// Bitwise
+	/// `&`
+	And,
+	/// `|`
+	Or,
+	/// `^`
+	Xor,
+
+	/// `<<`
+	Shl,
+	/// `>>`
+	Shr,
+
+	// Compairaison
+	/// `>`
+	Gt,
+	/// `>=`
+	Ge,
+	/// `<`
+	Lt,
+	/// `<=`
+	Le,
+
+	/// `==`
+	EqEq,
+	/// `!=`
+	Ne,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delimiter {
+	Paren,
+	Bracket,
+	Brace,
+	// Lexemes are `Lt` and `Gt`
+	Angled,
 }
 
 #[derive(Debug)]
@@ -187,7 +252,7 @@ pub struct Type {
 	pub alias: Option<Box<Ty>>,
 }
 
-/// `[ extern <externess> ] fn <name> <decl> <body>|;`
+/// `[ extern <abi> ] fn <name> <decl> <body>|;`
 #[derive(Debug)]
 pub struct Function {
 	pub name: Ident,

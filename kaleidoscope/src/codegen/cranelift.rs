@@ -7,10 +7,11 @@ use cranelift_module::{FuncId, Linkage, Module};
 use cranelift_object::{ObjectModule, ObjectProduct};
 
 use crate::{
-	Result, ast, bug,
+	Result,
+	ast::{self, BinaryOp},
+	bug,
 	codegen::{CodeGenBackend, JitBackend, ObjectBackend},
-	hir,
-	lexer::{self, BinaryOp},
+	hir, lexer,
 	session::{PrintKind, SessionCtx, Symbol},
 	tbir,
 	ty::{self, TyCtx},
@@ -246,44 +247,41 @@ impl<M: Module> CodeGenBackend for Generator<'_, M> {
 
 		for item in &hir.items {
 			match &item.kind {
-				hir::ItemKind::Extern { name, decl, abi } => {
+				hir::ItemKind::Function(func) => {
 					// TODO: do this elsewhere
-					let decl = self.tcx.lower_fn_decl(decl);
-					self.declare_extern(name.sym, &decl).unwrap();
-				}
-				hir::ItemKind::Function {
-					name: ident, decl, ..
-				} => {
-					// TODO: do this elsewhere
-					let decl = self.tcx.lower_fn_decl(decl);
-					let func_id = self.declare_function(ident.sym, &decl).unwrap();
+					let decl = self.tcx.lower_fn_decl(&func.decl);
+					let func_id = self.declare_function(func.name.sym, &decl).unwrap();
 
-					function_ids.insert(ident.sym, func_id);
+					function_ids.insert(func.name.sym, func_id);
 				}
 
-				hir::ItemKind::Adt { .. } | hir::ItemKind::Trait { .. } => todo!(),
+				hir::ItemKind::Adt { .. }
+				| hir::ItemKind::Type(_)
+				| hir::ItemKind::Trait { .. }
+				| hir::ItemKind::TraitImpl { .. } => todo!(),
 			}
 		}
 		for item in &hir.items {
 			match &item.kind {
-				hir::ItemKind::Extern { .. } => {}
-				hir::ItemKind::Function {
-					name: ident,
-					decl,
-					body,
-				} => {
+				hir::ItemKind::Function(func) => {
 					// TODO: do this elsewhere
-					let decl = self.tcx.lower_fn_decl(decl);
+					let decl = self.tcx.lower_fn_decl(&func.decl);
 
-					let body = self.tcx.typeck_fn(*ident, &decl, body.as_ref().unwrap());
+					// TODO: take abi into account
+					let body = self
+						.tcx
+						.typeck_fn(func.name, &decl, func.body.as_ref().unwrap());
 					if self.tcx.scx.options.print.contains(&PrintKind::TypedBodyIr) {
 						println!("{body:#?}");
 					}
-					let func_id = function_ids.get(&ident.sym).unwrap();
+					let func_id = function_ids.get(&func.name.sym).unwrap();
 					self.define_function(*func_id, &decl, &body).unwrap();
 				}
 
-				hir::ItemKind::Adt { .. } | hir::ItemKind::Trait { .. } => todo!(),
+				hir::ItemKind::Adt { .. }
+				| hir::ItemKind::Type(_)
+				| hir::ItemKind::Trait { .. }
+				| hir::ItemKind::TraitImpl { .. } => todo!(),
 			}
 		}
 	}
@@ -544,7 +542,7 @@ impl FunctionGenerator<'_, '_> {
 impl FunctionGenerator<'_, '_> {
 	fn codegen_bin_op(
 		&mut self,
-		op: ast::Spanned<lexer::BinaryOp>,
+		op: ast::Spanned<ast::BinaryOp>,
 		left: &tbir::Expr,
 		right: &tbir::Expr,
 	) -> Result<Value> {

@@ -2,7 +2,9 @@ use ariadne::ReportKind;
 
 use crate::{
 	codegen::{self, Backend, CodeGenBackend, JitBackend, ObjectBackend},
-	lowerer, parser, resolve,
+	lowerer, parser,
+	pretty_print::pretty_print_root,
+	resolve,
 	session::{Diagnostic, OutputKind, PrintKind, Report, SessionCtx, Span},
 	ty,
 };
@@ -28,9 +30,12 @@ pub fn pipeline(scx: &SessionCtx) {
 	};
 	if scx.options.print.contains(&PrintKind::Ast) {
 		println!("{ast:#?}");
-
-		// crate::pretty_print::pretty_print_root(&ast).unwrap();
 	}
+	if scx.options.print.contains(&PrintKind::AstPretty) {
+		pretty_print_root(&ast).unwrap();
+	}
+
+	scx.dcx().check_sane_or_exit();
 
 	// lowering to HIR
 	let lcx = lowerer::LowerCtx::new(scx);
@@ -39,11 +44,21 @@ pub fn pipeline(scx: &SessionCtx) {
 		println!("{hir:#?}");
 	}
 
+	scx.dcx().check_sane_or_exit();
+
 	// type collection, inference and analysis
 	let tcx = ty::TyCtx::new(scx);
 
 	let mut cltr = resolve::Collector::new(&tcx);
 	cltr.collect_items(&hir);
+	if scx.options.print.contains(&PrintKind::CollectedItems) {
+		let env = tcx.environment.borrow();
+		for (sym, ty) in &env.as_ref().unwrap().values {
+			println!("{sym:?}: {ty:?}");
+		}
+	}
+
+	scx.dcx().check_sane_or_exit();
 
 	// lower HIR bodies to TBIR
 	// codegen TBIR bodies

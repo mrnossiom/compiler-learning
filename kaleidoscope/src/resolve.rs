@@ -1,6 +1,10 @@
 use std::{collections::HashMap, mem};
 
-use crate::{hir, session::Symbol, ty};
+use crate::{
+	hir::{self, Function, Type},
+	session::Symbol,
+	ty,
+};
 
 #[derive(Debug)]
 pub enum Namespace {
@@ -10,9 +14,14 @@ pub enum Namespace {
 
 #[derive(Debug, Default)]
 pub struct Environment {
-	// TODO
-	// types: HashMap<Symbol, ...>,
+	pub types: HashMap<Symbol, TypeValueKind>,
 	pub values: HashMap<Symbol, ty::TyKind>,
+}
+
+#[derive(Debug)]
+pub enum TypeValueKind {
+	Trait(()),
+	Type(ty::TyKind),
 }
 
 #[derive(Debug)]
@@ -46,15 +55,26 @@ impl Collector<'_> {
 
 	fn collect_item(&mut self, item: &hir::Item) {
 		match &item.kind {
-			hir::ItemKind::Function { name, decl, .. }
-			| hir::ItemKind::Extern { name, decl, .. } => {
+			hir::ItemKind::Function(Function {
+				name,
+				decl,
+				body,
+				abi,
+			}) => {
 				let decl = self.tcx.lower_fn_decl(decl);
 				self.environment
 					.values
 					.insert(name.sym, ty::TyKind::Fn(Box::new(decl)));
 			}
 
-			hir::ItemKind::Adt { .. } | hir::ItemKind::Trait { .. } => todo!(),
+			hir::ItemKind::Type(Type(name, alias)) => {
+				self.environment
+					.types
+					.insert(name.sym, TypeValueKind::Type(todo!()));
+			}
+			hir::ItemKind::Adt { .. }
+			| hir::ItemKind::Trait { .. }
+			| hir::ItemKind::TraitImpl { .. } => todo!(),
 		}
 	}
 }

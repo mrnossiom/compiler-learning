@@ -32,18 +32,22 @@ mod options {
 	#[derive(Debug, Clone, ValueEnum)]
 	pub enum PrintKind {
 		Ast,
-		HigherIr,
-		TypedBodyIr,
+		AstPretty,
+		Hir,
+		Tbir,
 		BackendIr,
+		Items,
 	}
 
 	impl From<PrintKind> for session::PrintKind {
 		fn from(val: PrintKind) -> Self {
 			match val {
 				PrintKind::Ast => Self::Ast,
-				PrintKind::HigherIr => Self::HigherIr,
-				PrintKind::TypedBodyIr => Self::TypedBodyIr,
+				PrintKind::AstPretty => Self::AstPretty,
+				PrintKind::Hir => Self::HigherIr,
+				PrintKind::Tbir => Self::TypedBodyIr,
 				PrintKind::BackendIr => Self::BackendIr,
+				PrintKind::Items => Self::CollectedItems,
 			}
 		}
 	}
